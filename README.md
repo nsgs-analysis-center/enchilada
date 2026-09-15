@@ -645,7 +645,7 @@ and `benchmarks/benchmark_wheel.py` for a reproducible workload and memory costs
 
 ## Status
 
-0.2.0 — in development, with stateless blocks and
+0.3.0 — in development, with stateless blocks and
 orchestrator-owned state. This is still an alpha; pin a version for a running
 campaign. Copyright (c) 2026 Aaron Johnson. Licensed under the
 [Apache License, Version 2.0](LICENSE). Issues and questions welcome.
