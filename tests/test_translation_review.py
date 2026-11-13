@@ -5,6 +5,7 @@ import importlib.util
 import numpy as np
 import pytest
 
+from conftest import white_covariance
 from enchilada import BlockState, Covariance, Wheel
 from enchilada.translation import transform
 
@@ -19,7 +20,7 @@ from enchilada.translation import transform
 )
 def test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference(observed):
     covariance = transform(
-        Covariance.from_variance(observed, 1.0),
+        white_covariance(observed, 1.0),
         "wdm",
         num_frequency_divisions=4,
         reference_data=observed,
@@ -45,7 +46,7 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
             received.append(("sample", self.name, conditional_residual.data_domain))
             return current_block_state
 
-    wheel = Wheel(observed, Covariance.from_variance(observed, 2.0))
+    wheel = Wheel(observed, white_covariance(observed, 2.0))
     wheel.add(RecordInputs("default"), initial_block_state=BlockState())
     wheel.add(
         RecordInputs("explicit"), initial_block_state=BlockState(), data_domain="time"
@@ -53,7 +54,7 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
     assert received == []
     wheel.run(1)
     assert received == [("sample", "default", "time"), ("sample", "explicit", "time")]
-    assert wheel.covariance.noise_variance("A", observed) == 2.0
+    np.testing.assert_array_equal(wheel.covariance.A, 2.0)
 
 
 def test_same_grid_block_receives_the_covariance_without_the_seam(
@@ -78,10 +79,10 @@ def test_same_grid_block_receives_the_covariance_without_the_seam(
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             covariance.check_compatible(conditional_residual)
-            received.append(covariance.noise_variance("A", conditional_residual))
+            received.append(float(covariance.A[0]))
             return current_block_state
 
-    wheel = Wheel(observed, Covariance.from_variance(observed, 2.0))
+    wheel = Wheel(observed, white_covariance(observed, 2.0))
     wheel.add(RecordCovariance(), initial_block_state=BlockState(), data_domain="time")
     wheel.run(2)
     assert received == [2.0, 2.0]

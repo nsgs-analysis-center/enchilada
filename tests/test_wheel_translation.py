@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
+from conftest import white_covariance
 from enchilada import BlockState, Covariance, L1Data, WDMGrid, Wheel, transform
 from enchilada.testing import EchoBlock
 
@@ -162,7 +163,7 @@ def test_failed_translated_result_preserves_accepted_state_and_rng(failure):
                 if failure == "signal_shape":
                     return BlockState(template={"A": np.zeros(4, complex)})
                 return BlockState(
-                    covariance=Covariance.from_variance(
+                    covariance=white_covariance(
                         transform(conditional_residual, "time"), 1.0
                     )
                 )
@@ -277,13 +278,13 @@ def test_block_in_another_domain_reaches_the_covariance_seam_at_run():
             raise AssertionError("the seam must raise before sample is called")
 
     data = observations()
-    wheel = Wheel(data, Covariance.from_variance(data, 0.25), random_seed=3)
+    wheel = Wheel(data, white_covariance(data, 0.25), random_seed=3)
     wheel.add(NeverSampled(), initial_block_state=BlockState(), data_domain="frequency")
     rng_before = wheel._rng.bit_generator.state
     with pytest.raises(NotImplementedError, match="section 6"):
         wheel.run(1)
     assert wheel._rng.bit_generator.state == rng_before
-    assert wheel.covariance.noise_variance("A", data) == 0.25
+    np.testing.assert_array_equal(wheel.covariance.A, 0.25)
 
 
 def test_covariance_returned_in_another_domain_reaches_the_seam_at_run():

@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
+from conftest import white_covariance
 from enchilada import (
     Block,
     BlockState,
@@ -160,7 +161,7 @@ def test_seed_skips_prior_and_round_trips_through_selected_domain(
 def test_seed_snapshot_is_independent_including_noise_and_nested_parameters(observed):
     initial = replace(
         injected_result(observed),
-        covariance=Covariance.from_variance(observed, 0.25),
+        covariance=white_covariance(observed, 0.25),
         parameters={"amplitude": 2.0, "positions": [np.array([1, 2])]},
     )
     wheel = Wheel(observed)
@@ -174,7 +175,7 @@ def test_seed_snapshot_is_independent_including_noise_and_nested_parameters(obse
     assert accepted.parameters["amplitude"] == 2.0
     np.testing.assert_array_equal(accepted.parameters["positions"][0], [1, 2])
     np.testing.assert_array_equal(wheel.contribution("seeded")["A"], 2)
-    assert wheel.covariance.noise_variance("A", observed) == 0.25
+    np.testing.assert_array_equal(wheel.covariance.A, 0.25)
 
 
 @pytest.mark.parametrize("block_domain", [None, "frequency"])
@@ -200,7 +201,7 @@ def test_invalid_seed_leaves_registration_and_rng_unchanged(
     elif failure == "covariance":
         invalid = replace(
             invalid,
-            covariance=Covariance.from_variance(
+            covariance=white_covariance(
                 replace(
                     observed, channel_data={"A": np.full(32, 5.0)}, num_time_samples=32
                 ),
@@ -282,12 +283,9 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
             if with_noise:
                 current_block_state.covariance.check_compatible(conditional_residual)
                 covariance.check_compatible(conditional_residual)
-                # White noise has PSD 2 sigma^2 / fs = 1.25 at every bin. noise_psd
-                # reads the point variances, so this holds whether the translation
-                # layer returns the diagonal or the full form (spec 6, item 6).
-                np.testing.assert_allclose(
-                    covariance.noise_psd("A", conditional_residual), 2 * 0.25 / 0.4
-                )
+                # White noise with variance 0.25 per sample on this frequency grid:
+                # C = N sigma^2 / fs^2 = 64 * 0.25 / 0.4**2 = 100 at every bin.
+                np.testing.assert_allclose(covariance.A, 100.0)
             self.state.counter += 1
             return current_block_state
 
@@ -310,7 +308,7 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
     assert initial.parameters == {"variance": 0.25}
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], 5)
     if with_noise:
-        assert wheel.covariance.noise_variance("A", observed) == pytest.approx(0.25)
+        np.testing.assert_allclose(wheel.covariance.A, 100.0)
 
 
 def test_seed_translation_does_not_transform_unrelated_observations(observed):
@@ -340,13 +338,13 @@ def test_noise_only_seed_establishes_covariance_owner(observed):
             return BlockState(parameters={"variance": 0.25})
 
     seed = BlockState(
-        covariance=Covariance.from_variance(observed, 0.25),
+        covariance=white_covariance(observed, 0.25),
         parameters={"variance": 0.25},
     )
     wheel = Wheel(observed)
     wheel.add(DropsNoise(), initial_block_state=seed)
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], 5)
-    assert wheel.covariance.noise_variance("A", observed) == 0.25
+    np.testing.assert_array_equal(wheel.covariance.A, 0.25)
     with pytest.raises(ValueError, match="owns the current covariance"):
         wheel.run(1)
     assert wheel.ledger["seeded"].covariance is not None
@@ -354,18 +352,18 @@ def test_noise_only_seed_establishes_covariance_owner(observed):
 
 def test_seeded_noise_takeover_warning_can_fail_atomically(observed):
     wheel = Wheel(observed, random_seed=3)
-    initial = BlockState(covariance=Covariance.from_variance(observed, 1.0))
+    initial = BlockState(covariance=white_covariance(observed, 1.0))
     first, second = SeededBlock(), SeededBlock()
     first.name, second.name = "first", "second"
     wheel.add(first, initial_block_state=initial)
-    new_noise = BlockState(covariance=Covariance.from_variance(observed, 2.0))
+    new_noise = BlockState(covariance=white_covariance(observed, 2.0))
     with warnings.catch_warnings():
         warnings.simplefilter("error", NoiseOverwrittenWarning)
         with pytest.raises(NoiseOverwrittenWarning):
             wheel.add(second, initial_block_state=new_noise)
     assert list(wheel.ledger) == ["first"]
     assert "second" not in wheel._block_domains
-    assert wheel.covariance.noise_variance("A", observed) == 1.0
+    np.testing.assert_array_equal(wheel.covariance.A, 1.0)
 
 
 def test_check_block_can_exercise_an_explicit_injection(observed):

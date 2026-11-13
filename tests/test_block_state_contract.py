@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from enchilada import BlockState, Covariance, Wheel
+from conftest import white_covariance
+from enchilada import BlockState, Wheel
 
 
 def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
@@ -31,7 +32,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
                     name: np.full_like(values, amplitude)
                     for name, values in conditional_residual.channel_data.items()
                 },
-                covariance=Covariance.from_variance(conditional_residual, 2.0),
+                covariance=white_covariance(conditional_residual, 2.0),
                 parameters={"amplitude": amplitude},
             )
 
@@ -51,7 +52,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
         np.testing.assert_allclose(
             wheel.working_residual.channel_data[name], observed.channel_data[name] - 2.0
         )
-        assert accepted.covariance.noise_variance(name, observed) == 2.0
+        np.testing.assert_array_equal(accepted.covariance.pair(name, name), 2.0)
 
     accepted.parameters["amplitude"] = 100.0
     accepted.template["A"][:] = 100.0

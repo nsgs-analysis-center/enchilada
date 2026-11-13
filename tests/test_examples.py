@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import white_covariance
+
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 
@@ -106,7 +108,7 @@ def test_toy_prior_is_random_and_separate_campaigns_are_reproducible():
 
 
 def test_sine_conditional_includes_declared_amplitude_prior():
-    from enchilada import Covariance, L1Data
+    from enchilada import L1Data
 
     toy = load_example("toy_fit")
     data = L1Data(
@@ -116,7 +118,7 @@ def test_sine_conditional_includes_declared_amplitude_prior():
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = Covariance.from_variance(data, 2.0)
+    noise = white_covariance(data, 2.0)
     signal = toy.SineBlock("signal", 0.25, prior_std=0.5)
     prior = toy.draw_sine_prior(signal, data, rng=np.random.default_rng(0))
     draws = np.array(
@@ -192,12 +194,7 @@ def gb_test_context():
         physical_observable="fractional_frequency",
         data_domain="frequency",
     )
-
-    class UnitPSD:
-        def psd(self, freqs, channel=None):
-            return np.ones_like(freqs)
-
-    return data, Covariance.from_psd(data, UnitPSD())
+    return data, Covariance.like(data, {"A": np.full(33, data.Tobs / 2)})
 
 
 @pytest.mark.parametrize("num_time_samples", [63, 64])
@@ -325,18 +322,11 @@ def test_gb_recomputes_likelihood_for_changed_residual(gb_model_with_eryn):
 
 
 def test_sine_requires_time_white_noise_on_the_data_grid():
-    from enchilada import Covariance
-
     toy = load_example("toy_fit")
     data = toy.make_observed()
     block = toy.SineBlock("slow", 0.004)
     prior = toy.draw_sine_prior(block, data, rng=np.random.default_rng(0))
-
-    class UnitPSD:
-        def psd(self, f, channel=None):
-            return np.ones_like(f)
-
-    noise = Covariance.from_psd(data.to_frequency(), UnitPSD())
+    noise = white_covariance(data.to_frequency(), 1.0)
     with pytest.raises(ValueError, match="time-domain white noise on the data grid"):
         block.sample(data, noise, prior, rng=np.random.default_rng(1))
 

@@ -5,8 +5,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from conftest import make_observed
-from enchilada import BlockState, Covariance, L1Data, Wheel, transform
+from conftest import make_observed, white_covariance
+from enchilada import BlockState, L1Data, Wheel, transform
 
 
 class TestConstructorSettings:
@@ -20,7 +20,7 @@ class TestConstructorSettings:
             **settings,
         )
         assert data.channel_names == ("E", "A")
-        covariance = Covariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        covariance = white_covariance(data, {"A": 1.0, "E": 4.0})
         assert covariance.channel_names == ("E", "A")
         assert covariance.E[0] == 4 and covariance.A[0] == 1
         whitened = sum(
@@ -40,7 +40,7 @@ class TestConstructorSettings:
             data,
             channel_data={"A": data.channel_data["A"], "E": data.channel_data["E"]},
         )
-        covariance = Covariance.from_variance(data, {"A": 1.0, "E": 4.0})
+        covariance = white_covariance(data, {"A": 1.0, "E": 4.0})
         wheel = Wheel(reordered, covariance)
         assert wheel.observed_data.channel_names == ("E", "A")
         assert reordered.to_frequency().to_time().channel_names == ("E", "A")
@@ -53,7 +53,7 @@ class TestConstructorSettings:
             tdi_generation="2.0",
             physical_observable="strain",
         )
-        covariance = Covariance.from_variance(data, {"E": 4.0, "A": 1.0})
+        covariance = white_covariance(data, {"E": 4.0, "A": 1.0})
         assert data.channel_names == ("A", "E")
         assert covariance.A[0] == 1 and covariance.E[0] == 4
         covariance.check_compatible(data)
@@ -610,10 +610,6 @@ class TestDomainTransforms:
         """
         fs, n, sigma = 0.2, 1 << 13, 0.7
 
-        class White:
-            def psd(self, f, channel=None):
-                return np.full_like(f, 2.0 * sigma**2 / fs)
-
         rng = np.random.default_rng(1)
         acc = None
         trials = 40
@@ -628,7 +624,7 @@ class TestDomainTransforms:
             power = np.abs(t.to_frequency().channel_data["A"]) ** 2
             acc = power if acc is None else acc + power
         measured = acc / trials
-        covariance = Covariance.from_psd(t.to_frequency(), White())
+        covariance = white_covariance(t.to_frequency(), sigma**2)
         predicted = covariance.A
         interior = slice(10, -10)
         ratio = float(np.mean(measured[interior] / predicted[interior]))
@@ -769,7 +765,7 @@ class TestBlockStateClass:
 
     def test_with_covariance_returns_a_new_block_state(self, observed):
         z = observed.zero_block_state()
-        model = Covariance.from_variance(observed, 1.0)
+        model = white_covariance(observed, 1.0)
         published = z.with_covariance(model)
         assert published.covariance is model
         assert z.covariance is None  # frozen: the original is unchanged

@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from conftest import make_observed
-from enchilada import BlockState, Covariance
+from conftest import make_observed, white_covariance
+from enchilada import BlockState
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -15,7 +15,7 @@ class TestCheckBlock:
             observed_data=observed,
             initial_block_state=BlockState(),
             num_cycles=2,
-            initial_covariance=Covariance.from_variance(observed, 1.0),
+            initial_covariance=white_covariance(observed, 1.0),
             random_seed=0,
         )
 
@@ -71,10 +71,6 @@ class TestCheckBlock:
             )
 
     def test_conforming_noise_block_passes(self, observed):
-        class FlatPSD:
-            def psd(self, freqs, channel=None):
-                return np.full_like(freqs, 1.0)
-
         class FlatNoiseBlock(EchoBlock):
             def sample(
                 self,
@@ -84,10 +80,8 @@ class TestCheckBlock:
                 *,
                 rng,
             ):
-                from enchilada import Covariance
-
                 return conditional_residual.block_state().with_covariance(
-                    Covariance.from_psd(conditional_residual, FlatPSD())
+                    white_covariance(conditional_residual, 1.0)
                 )
 
         check_block(

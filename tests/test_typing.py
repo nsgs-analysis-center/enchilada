@@ -42,7 +42,7 @@ y: str = r.T_obs   # typo in assignment position
 
 assert_type(transform(r, "frequency"), L1Data)
 assert_type(transform(r, "wdm", num_frequency_divisions=2).wdm_grid, WDMGrid | None)
-noise = Covariance.from_variance(r, 1.0)
+noise = Covariance.like(r, {"A": np.ones(8)})
 assert_type(transform(noise, "time", reference_data=r), Covariance)
 assert_type(transform(BlockState(), "time"), BlockState)
 wheel = Wheel(r, noise)

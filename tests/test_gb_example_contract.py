@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import white_covariance
 from enchilada import Covariance, L1Data, Wheel, transform
 
 
@@ -38,12 +39,7 @@ def spectral_context():
         physical_observable="fractional_frequency",
         data_domain="frequency",
     )
-
-    class UnitPSD:
-        def psd(self, frequencies, channel=None):
-            return np.ones_like(frequencies)
-
-    return data, Covariance.from_psd(data, UnitPSD())
+    return data, Covariance.like(data, {"A": np.full(33, data.Tobs / 2)})
 
 
 def make_block(model):
@@ -80,7 +76,7 @@ def test_gb_requires_a_diagonal_form_frequency_covariance_on_the_data_grid(
     gb_model, spectral_context
 ):
     data, _ = spectral_context
-    time_noise = Covariance.from_variance(transform(data, "time"), 1.0)
+    time_noise = white_covariance(transform(data, "time"), 1.0)
     with pytest.raises(
         ValueError, match="frequency-domain covariance on the data grid"
     ):
@@ -98,12 +94,10 @@ def test_gb_rejects_covariance_on_a_different_grid(gb_model, spectral_context):
         channel_data={ch: arr[:-2] for ch, arr in time_data.channel_data.items()},
         num_time_samples=time_data.num_time_samples - 2,
     )
-
-    class UnitPSD:
-        def psd(self, frequencies, channel=None):
-            return np.ones_like(frequencies)
-
-    noise = Covariance.from_psd(transform(shorter, "frequency"), UnitPSD())
+    spectrum = transform(shorter, "frequency")
+    noise = Covariance.like(
+        spectrum, {"A": np.full(spectrum.channel_data["A"].shape, spectrum.Tobs / 2)}
+    )
     with pytest.raises(
         ValueError, match="frequency-domain covariance on the data grid"
     ):

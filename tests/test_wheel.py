@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 import pytest
 
-from conftest import const_block_state, make_observed
+from conftest import const_block_state, make_observed, white_covariance
 from enchilada import BlockState, Covariance, NoiseOverwrittenWarning, Wheel
 from enchilada.testing import EchoBlock
 
@@ -24,7 +24,7 @@ def constant_initial_result(observed, value, *, dtype=None):
 
 def noise_initial_result(observed, level=1.0):
     return BlockState(
-        covariance=Covariance.from_variance(observed, level),
+        covariance=white_covariance(observed, level),
     )
 
 
@@ -57,14 +57,6 @@ class ConstBlock:
         return const_block_state(residual, self.value)
 
 
-class FlatPSD:
-    def __init__(self, level=1.0):
-        self.level = level
-
-    def psd(self, freqs, channel=None):
-        return np.full_like(freqs, self.level)
-
-
 class LevelNoiseBlock:
     """A covariance level driven by a sampling-call counter."""
 
@@ -79,9 +71,7 @@ class LevelNoiseBlock:
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
         return conditional_residual.block_state().with_covariance(
-            Covariance.from_variance(
-                conditional_residual, float(self.state.updates + 1)
-            )
+            white_covariance(conditional_residual, float(self.state.updates + 1))
         )
 
 
@@ -485,10 +475,10 @@ class TestExplicitNoise:
             LevelNoiseBlock("noise"),
             initial_block_state=noise_initial_result(observed),
         )
-        assert wheel.covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
         wheel.run(2)
-        assert wheel.covariance.noise_variance("A", observed) == 3.0
-        assert wheel.ledger["noise"].covariance.noise_variance("A", observed) == 3.0
+        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
+        np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 3.0)
 
     def test_noise_block_contributes_zero_without_signal(self, observed):
         wheel = Wheel(observed)
@@ -511,15 +501,13 @@ class TestExplicitNoise:
             initial_block_state=noise_initial_result(observed),
         )
         covariance = wheel.covariance
-        initial = constant_initial_result(
-            observed, covariance.noise_variance("A", observed)
-        )
+        initial = constant_initial_result(observed, float(covariance.A[0]))
         wheel.add(
-            ConstBlock("rec", covariance.noise_variance("A", observed)),
+            ConstBlock("rec", float(covariance.A[0])),
             initial_block_state=initial,
         )
         assert isinstance(covariance, Covariance)
-        assert covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(covariance.A, 1.0)
         np.testing.assert_array_equal(wheel.contribution("rec")["A"], 1.0)
 
     def test_sample_sees_current_noise(self, observed):
@@ -534,7 +522,7 @@ class TestExplicitNoise:
                 *,
                 rng,
             ):
-                levels.append(covariance.noise_variance("A", conditional_residual))
+                levels.append(float(covariance.A[0]))
                 return super().sample(
                     conditional_residual,
                     covariance,
@@ -566,7 +554,7 @@ class TestExplicitNoise:
                 *,
                 rng,
             ):
-                seen.append(current_block_state.covariance.pairs[("A", "A")])
+                seen.append(current_block_state.covariance.A)
                 return super().sample(
                     conditional_residual,
                     covariance,
@@ -582,16 +570,13 @@ class TestExplicitNoise:
         assert len(seen) == 2
         assert not any(arr.flags.writeable for arr in seen)
         for state in (wheel.ledger["noise"], wheel.ledger.snapshot()["noise"]):
-            assert not any(
-                arr.flags.writeable for arr in state.covariance.pairs.values()
-            )
+            assert not state.covariance.A.flags.writeable
 
-    def test_initial_psd_model_must_be_converted_explicitly(self, observed):
-        psd_model = FlatPSD(7.0)
+    def test_initial_covariance_must_be_a_covariance(self, observed):
         with pytest.raises(TypeError, match="initial_covariance.*Covariance"):
-            Wheel(observed, initial_covariance=psd_model)
+            Wheel(observed, initial_covariance=object())
         spectrum = observed.to_frequency()
-        covariance = Covariance.from_psd(spectrum, psd_model)
+        covariance = white_covariance(spectrum, 7.0)
         wheel = Wheel(spectrum, initial_covariance=covariance)
         wheel.add(
             EchoBlock("echo"),
@@ -601,7 +586,7 @@ class TestExplicitNoise:
         np.testing.assert_array_equal(wheel.covariance.A, covariance.A)
 
     def test_fixed_covariance_is_passed_explicitly(self, observed):
-        covariance = Covariance.from_variance(observed, 7.0)
+        covariance = white_covariance(observed, 7.0)
         wheel = Wheel(observed_data=observed, initial_covariance=covariance)
         wheel.add(
             EchoBlock("echo"),
@@ -631,7 +616,7 @@ class TestBoundaryGuards:
     def test_a_signal_block_does_not_disturb_the_noise_model(self, rng):
         """A signal block can omit covariance and preserve fixed noise."""
         obs = make_observed(rng).to_frequency()
-        covariance = Covariance.from_psd(obs, FlatPSD(3.0))
+        covariance = white_covariance(obs, 3.0)
         wheel = Wheel(obs, initial_covariance=covariance)
         expected = wheel.covariance.A.copy()
         wheel.add(
@@ -1032,7 +1017,7 @@ class TestObservedDataIsChecked:
                 pass
 
         mismatched_grid = make_observed(np.random.default_rng(1), num_time_samples=32)
-        covariance = Covariance.from_variance(mismatched_grid, 1.0)
+        covariance = white_covariance(mismatched_grid, 1.0)
         unchecked = UncheckedCovariance(
             dict(covariance.pairs), channel_names=covariance.channel_names
         )
@@ -1045,19 +1030,17 @@ class TestObservedDataIsChecked:
             ):
                 return BlockState(covariance=unchecked)
 
-        wheel = Wheel(
-            observed, initial_covariance=Covariance.from_variance(observed, 1.0)
-        )
+        wheel = Wheel(observed, initial_covariance=white_covariance(observed, 1.0))
         wheel.add(PublishesUnchecked("noise"), initial_block_state=BlockState())
         with pytest.raises(ValueError, match="shape"):
             wheel.run(1)
         assert wheel.covariance.A.shape == observed.channel_data["A"].shape
-        assert wheel.covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
 
         # On the right grid, validation passes; only the copy keeps the stored
         # object a plain Covariance rather than the caller's subclass.
         compatible = UncheckedCovariance(
-            dict(Covariance.from_variance(observed, 2.0).pairs),
+            dict(white_covariance(observed, 2.0).pairs),
             channel_names=observed.channel_names,
         )
         wheel = Wheel(observed, initial_covariance=compatible)
@@ -1100,7 +1083,7 @@ class TestNoiseOwnership:
                 # a real noise block re-estimates, so it publishes a NEW object
                 # every cycle -- that must not read as an overwrite
                 return conditional_residual.block_state().with_covariance(
-                    Covariance.from_variance(conditional_residual, level)
+                    white_covariance(conditional_residual, level)
                 )
 
         return NoiseWriter()
@@ -1134,7 +1117,7 @@ class TestNoiseOwnership:
             # Failed membership or owner adoption would break this next cycle.
             wheel.run(1)
         assert list(wheel.ledger) == ["instrument"]
-        assert wheel.covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
         np.testing.assert_array_equal(wheel.working_residual.channel_data["A"], before)
 
     def test_warning_as_error_rolls_back_sample(self, observed):
@@ -1150,7 +1133,7 @@ class TestNoiseOwnership:
                 self.state.updates += 1
                 return conditional_residual.block_state(
                     const_block_state(conditional_residual, 9.0).template,
-                ).with_covariance(Covariance.from_variance(conditional_residual, 2.0))
+                ).with_covariance(white_covariance(conditional_residual, 2.0))
 
         wheel = Wheel(observed)
         wheel.add(
@@ -1169,7 +1152,7 @@ class TestNoiseOwnership:
                 with pytest.raises(NoiseOverwrittenWarning, match="'instrument' owns"):
                     wheel.run(1)
         assert list(wheel.ledger) == ["instrument", "takeover"]
-        assert wheel.covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
         assert wheel.ledger["takeover"].parameters == {"value": 0.5}
         assert takeover.state.updates == 2
         assert wheel.ledger["takeover"].covariance is None
@@ -1208,7 +1191,7 @@ class TestNoiseOwnership:
 
     def test_replacing_initial_covariance_is_silent(self, observed):
         """Initial covariance is not owned by a block."""
-        covariance = Covariance.from_variance(observed, 9.0)
+        covariance = white_covariance(observed, 9.0)
         wheel = Wheel(observed, initial_covariance=covariance)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -1216,7 +1199,7 @@ class TestNoiseOwnership:
                 self._noise_block("noise", 1.0),
                 initial_block_state=noise_initial_result(observed, 1.0),
             )
-        assert wheel.covariance.noise_variance("A", observed) == 1.0
+        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
 
     def test_a_signal_block_does_not_claim_noise_ownership(self, observed):
         """A signal-only result leaves the existing covariance owner unchanged."""

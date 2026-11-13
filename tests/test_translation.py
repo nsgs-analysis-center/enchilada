@@ -6,6 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from conftest import white_covariance
 from enchilada import BlockState, Covariance, L1Data, WDMGrid
 from enchilada.translation import transform
 
@@ -76,7 +77,7 @@ def test_same_domain_transform_is_an_independent_snapshot():
     copied = transform(data, "time")
     copied.channel_data["A"][:] = 0
     assert np.any(data.channel_data["A"])
-    covariance = Covariance.from_variance(data, 2.0)
+    covariance = white_covariance(data, 2.0)
     copied_covariance = transform(covariance, "time", reference_data=data)
     assert not np.shares_memory(copied_covariance.A, covariance.A)
 
@@ -99,7 +100,7 @@ def test_result_conversion_preserves_state_without_aliasing():
 
 def test_noise_only_state_needs_reference_data_and_parameters_only_does_not():
     data = observations()
-    result = BlockState(covariance=Covariance.from_variance(data, 1.0))
+    result = BlockState(covariance=white_covariance(data, 1.0))
     with pytest.raises(
         ValueError, match="covariance requires its source reference_data"
     ):
@@ -123,7 +124,7 @@ def test_conversion_rejects_missing_or_mismatched_reference():
         transform(result, "frequency", reference_data=observations(32))
     with pytest.raises(ValueError, match="shape"):
         transform(
-            Covariance.from_variance(data, 1.0),
+            white_covariance(data, 1.0),
             "time",
             reference_data=observations(32),
         )
@@ -269,7 +270,7 @@ def test_unrelated_wdm_package_and_unsupported_python_have_clear_errors(monkeypa
 
 def test_covariance_same_domain_transform_is_an_independent_copy():
     data = observations()
-    cov = Covariance.from_variance(data, 2.0)
+    cov = white_covariance(data, 2.0)
     copied = transform(cov, "time", reference_data=data)
     assert isinstance(copied, Covariance)
     assert copied is not cov
@@ -279,7 +280,7 @@ def test_covariance_same_domain_transform_is_an_independent_copy():
 
 def test_covariance_cross_domain_transform_is_the_seam():
     data = observations()
-    cov = Covariance.from_variance(data, 2.0)
+    cov = white_covariance(data, 2.0)
     with pytest.raises(NotImplementedError, match="section 6"):
         transform(cov, "frequency", reference_data=data)
     with pytest.raises(ValueError, match="reference_data"):
@@ -308,10 +309,10 @@ def test_covariance_seam_copies_through_covariance_methods():
 
     data = observations()
     same = transform(
-        unchecked(Covariance.from_variance(data, 2.0)), "time", reference_data=data
+        unchecked(white_covariance(data, 2.0)), "time", reference_data=data
     )
     assert type(same) is Covariance
-    short = unchecked(Covariance.from_variance(observations(32), 2.0))
+    short = unchecked(white_covariance(observations(32), 2.0))
     with pytest.raises(ValueError, match="shape"):
         transform(short, "time", reference_data=data)
 
@@ -350,3 +351,33 @@ def test_covariance_wdm_regrid_is_the_seam_but_same_grid_copies():
     assert not np.shares_memory(same.A, cov.A)
     with pytest.raises(NotImplementedError):
         transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)
+
+
+@requires_wdm
+def test_white_noise_wdm_coefficient_variance_matches_white_covariance():
+    """E[w^2] == sigma^2 / fs at every active pixel for white noise of variance
+    sigma^2 per sample: the WDM constant used by white_covariance."""
+    fs, n, sigma = 0.2, 1 << 12, 0.7
+    rng = np.random.default_rng(3)
+    acc = None
+    trials = 40
+    for _ in range(trials):
+        t = L1Data(
+            channel_data={"A": rng.normal(0.0, sigma, n)},
+            sample_rate_hz=fs,
+            channel_names=("A",),
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+        )
+        wdm = transform(t, "wdm", num_frequency_divisions=64)
+        power = wdm.channel_data["A"] ** 2
+        acc = power if acc is None else acc + power
+    measured = acc / trials
+    predicted = white_covariance(wdm, sigma**2).A
+    active = wdm.wdm_grid.active_mask
+    np.testing.assert_array_equal(predicted[~active], 0.0)
+    interior = active.copy()
+    interior[:2] = False  # the edge bands carry the window's half-band
+    interior[-2:] = False
+    ratio = float(np.mean(measured[interior] / predicted[interior]))
+    assert ratio == pytest.approx(1.0, abs=0.05)

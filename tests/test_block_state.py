@@ -5,8 +5,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from conftest import make_observed
-from enchilada import BlockState, Covariance, Wheel
+from conftest import make_observed, white_covariance
+from enchilada import BlockState, Wheel
 
 
 def test_wdm_result_factory_accepts_active_signal_and_zero_factory_matches_grid(
@@ -108,21 +108,6 @@ def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_s
     )
 
 
-def white_noise(data, variance):
-    """White noise with this time-sample variance on a time or frequency grid."""
-    if data.data_domain == "time":
-        return Covariance.from_variance(data, variance)
-    # dt * rfft of white noise: E|X_k|^2 = N sigma^2 / fs^2 at every bin.
-    level = data.num_time_samples * variance / data.sample_rate_hz**2
-    return Covariance.like(
-        data,
-        {
-            ch: np.full(data.num_time_samples // 2 + 1, level)
-            for ch in data.channel_names
-        },
-    )
-
-
 def noise_initial_result(observed, *, signal_value=None):
     signal = None
     if signal_value is not None:
@@ -132,7 +117,7 @@ def noise_initial_result(observed, *, signal_value=None):
         }
     return observed.block_state(
         template=signal,
-        covariance=white_noise(observed, 1),
+        covariance=white_covariance(observed, 1),
         parameters={"variance": 1},
     )
 
@@ -153,7 +138,7 @@ class NoiseOnly:
         self.state.draw = rng.normal()
         variance = current_block_state.parameters["variance"] + 1
         return conditional_residual.block_state(
-            covariance=white_noise(conditional_residual, variance),
+            covariance=white_covariance(conditional_residual, variance),
             parameters={"variance": variance},
         )
 
@@ -198,7 +183,7 @@ def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
     assert expected_block.state.steps == 0
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
     assert actual.ledger["noise"].parameters == {"variance": 1}
-    assert actual.covariance.noise_variance("A", observed) == 1
+    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 1).A)
     np.testing.assert_array_equal(actual.contribution("noise")["A"], 0.5)
     np.testing.assert_array_equal(actual.working_residual.channel_data["A"], -0.5)
 
@@ -208,7 +193,7 @@ def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
     assert expected_block.state.steps == 1
     assert actual_block.state.draw == expected_block.state.draw
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
-    assert actual.covariance.noise_variance("A", observed) == 2
+    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 2).A)
     np.testing.assert_array_equal(actual.working_residual.channel_data["A"], 0.0)
 
 
@@ -225,8 +210,8 @@ def test_noise_only_result_preserves_data_without_signal_arrays(observed, domain
     assert result.template is None
     assert result.parameters == {"variance": 3}
     assert block.state.steps == 2
-    assert result.covariance.noise_variance("A", observed) == 3
-    assert wheel.covariance.noise_variance("A", observed) == 3
+    np.testing.assert_array_equal(result.covariance.A, white_covariance(observed, 3).A)
+    np.testing.assert_array_equal(wheel.covariance.A, white_covariance(observed, 3).A)
     contribution = wheel.contribution("noise")
     assert set(contribution) == set(observed.channel_names)
     for channel, samples in observed.channel_data.items():
@@ -287,7 +272,7 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
     np.testing.assert_allclose(
         wheel.working_residual.channel_data["A"], observed.channel_data["A"]
     )
-    assert wheel.covariance.noise_variance("A", observed) == 2
+    np.testing.assert_array_equal(wheel.covariance.A, white_covariance(observed, 2).A)
     wheel.run(1)
     assert wheel.ledger["population"].parameters == {"num_sources": 1}
     assert population.state.steps == 2
@@ -314,7 +299,7 @@ def test_rejected_noise_result_preserves_signal_covariance_state_and_rng(
                     wrong_grid = make_observed(
                         np.random.default_rng(0), num_time_samples=32
                     )
-                    covariance = Covariance.from_variance(wrong_grid, 2)
+                    covariance = white_covariance(wrong_grid, 2)
                 return replace(result, covariance=covariance)
             return result
 
@@ -329,7 +314,7 @@ def test_rejected_noise_result_preserves_signal_covariance_state_and_rng(
     assert actual_block.state.steps == 1
     assert expected_block.state.steps == 0
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
-    assert actual.covariance.noise_variance("A", observed) == 1
+    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 1).A)
     np.testing.assert_array_equal(actual.contribution("noise")["A"], 0.5)
     np.testing.assert_allclose(
         actual.working_residual.channel_data["A"], observed.channel_data["A"] - 0.5
@@ -341,7 +326,7 @@ def test_rejected_noise_result_preserves_signal_covariance_state_and_rng(
     assert actual_block.state.draw == expected_block.state.draw
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
     assert actual.ledger["noise"].template is None
-    assert actual.covariance.noise_variance("A", observed) == 2
+    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 2).A)
     np.testing.assert_array_equal(
         actual.working_residual.channel_data["A"], observed.channel_data["A"]
     )

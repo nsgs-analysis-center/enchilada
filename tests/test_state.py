@@ -5,8 +5,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
-from conftest import make_observed
-from enchilada import Covariance, Wheel
+from conftest import make_observed, white_covariance
+from enchilada import Wheel
 
 
 def counter_initial_result(observed):
@@ -158,7 +158,7 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
                 wrong_grid = make_observed(
                     np.random.default_rng(0), num_time_samples=32
                 )
-                return result.with_covariance(Covariance.from_variance(wrong_grid, 1))
+                return result.with_covariance(white_covariance(wrong_grid, 1))
             return result
 
     actual, expected = Wheel(observed, random_seed=12), Wheel(observed, random_seed=12)
@@ -178,7 +178,7 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
 # "time" on time observations takes the Wheel's same-grid short-circuit.
 @pytest.mark.parametrize("data_domain", [None, "time"])
 def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domain):
-    covariance = Covariance.from_variance(observed, 1)
+    covariance = white_covariance(observed, 1)
     wheel = Wheel(observed, initial_covariance=covariance)
     covariance.pairs[("A", "A")].setflags(write=True)
     covariance.pairs[("A", "A")][:] *= 2
@@ -198,7 +198,7 @@ def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domai
         data_domain=data_domain,
     )
     wheel.run(1)
-    assert wheel.covariance.noise_variance("A", observed) == 1
+    np.testing.assert_array_equal(wheel.covariance.A, 1)
 
 
 def test_residual_overflow_is_rejected_before_registration(observed):
