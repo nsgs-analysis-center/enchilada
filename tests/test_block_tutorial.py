@@ -40,7 +40,7 @@ def test_block_tutorial_runs_and_checks_its_sampler(tmp_path):
     assert "Known-injection start checks passed" in result.stdout
     assert "Posterior checks passed" in result.stdout
     assert "Continuation and isolation checks passed" in result.stdout
-    assert "Domain handoff checks passed" in result.stdout
+    assert "PSD construction checks passed" in result.stdout
     assert "Noise-only block checks passed" in result.stdout
 
 
@@ -67,7 +67,8 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
 ):
     import numpy as np
 
-    from enchilada import DataCovariance, L1Data
+    from conftest import white_covariance
+    from enchilada import L1Data
 
     module = tutorial_definitions
     times = np.arange(64)
@@ -79,22 +80,23 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = DataCovariance.from_variance(data, 0.2)
+    noise = white_covariance(data, 0.2)
     block = module.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=0.4, steps_per_call=20
     )
-    initial_result = block._render(data, 0.0, 0, 0)
+    initial_result = block._render(data, 0.0)
     # Identical continuation state and RNG, but the other blocks change the
     # conditional data and covariance. A cached old target would repeat a draw.
     positive = block.sample(data, noise, initial_result, rng=np.random.default_rng(1))
     changed_data = replace(data, channel_data={"A": -2.0 * basis})
-    changed_noise = DataCovariance.from_variance(changed_data, 0.4)
+    changed_noise = white_covariance(changed_data, 0.4)
     negative = block.sample(
         changed_data, changed_noise, initial_result, rng=np.random.default_rng(1)
     )
-    assert positive.model_parameters["amplitude"] > 0
-    assert negative.model_parameters["amplitude"] < 0
-    assert initial_result.sampler_state["num_proposals"] == 0
+    assert positive.parameters["amplitude"] > 0
+    assert negative.parameters["amplitude"] < 0
+    assert initial_result.parameters == {"amplitude": 0.0}
+    assert block.state.num_proposals == 2 * block.steps_per_call
 
 
 def test_tutorial_rejection_returns_retained_signal_and_complete_state(
@@ -102,7 +104,8 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
 ):
     import numpy as np
 
-    from enchilada import DataCovariance, L1Data
+    from conftest import white_covariance
+    from enchilada import L1Data
 
     data = L1Data(
         channel_data={"A": np.zeros(64)},
@@ -111,15 +114,22 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
     )
-    noise = DataCovariance.from_variance(data, 0.2)
+    noise = white_covariance(data, 0.2)
     block = tutorial_definitions.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=1e12, steps_per_call=8
     )
-    initial_result = block._render(data, 0.0, 0, 0)
+    initial_result = block._render(data, 0.0)
     result = block.sample(data, noise, initial_result, rng=np.random.default_rng(1))
-    assert result.model_parameters == initial_result.model_parameters
-    np.testing.assert_array_equal(
-        result.tdi_signal_contribution["A"], initial_result.tdi_signal_contribution["A"]
-    )
-    assert result.sampler_state == {"num_proposals": 8, "num_acceptances": 0}
-    assert initial_result.sampler_state == {"num_proposals": 0, "num_acceptances": 0}
+    assert result.parameters == initial_result.parameters
+    np.testing.assert_array_equal(result.template["A"], initial_result.template["A"])
+    assert block.state.num_proposals == 8
+    assert block.state.num_acceptances == 0
+    assert not hasattr(result, "sampler_state")
+
+
+def test_tutorial_block_instances_keep_independent_diagnostics(tutorial_definitions):
+    first = tutorial_definitions.SineAmplitudeBlock("first", 0.125)
+    second = tutorial_definitions.SineAmplitudeBlock("second", 0.125)
+    first.state.num_proposals = 5
+    assert second.state.num_proposals == 0
+    assert first.state is not second.state

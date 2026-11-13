@@ -2,13 +2,18 @@ name: WDM integration
 
 on:
   workflow_call:
+    secrets:
+      WDM_DEPLOY_KEY:
+        description: Read-only SSH deploy key for the private WDM backend
+        # Public WDM checkouts will no longer need this credential.
+        required: false
 
 permissions:
   contents: read
 
 env:
   UV_VERSION: "0.12.1"
-  # Update the tested backend and docs/domain-translation.md together.
+  # Update the tested backend and README.md WDM installation instructions together.
   WDM_REVISION: "6f145b4076862ea4786150a54d5a1f28af3c7055"
   WDM_VERSION: "0.2.0"
 
@@ -16,17 +21,18 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Check out the tested optional backend
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: AaronDJohnson/wdm
           ref: ${{ env.WDM_REVISION }}
           path: .wdm-backend
+          ssh-key: ${{ secrets.WDM_DEPLOY_KEY }}
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.13"
@@ -71,11 +77,12 @@ jobs:
         run: |
           uv run --no-sync pytest -q \
             tests/test_translation.py \
-            tests/test_covariance_translation.py \
             tests/test_wheel_translation.py \
             tests/test_toy_translation.py \
             tests/test_translation_review.py \
             tests/test_translation_example.py \
+            tests/test_initial_block_state.py \
+            tests/test_gb_example_contract.py \
             --junitxml="$RUNNER_TEMP/wdm-integration.xml"
           uv run --no-sync python - "$RUNNER_TEMP/wdm-integration.xml" <<'PY'
           import sys

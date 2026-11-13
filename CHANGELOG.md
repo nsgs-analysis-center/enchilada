@@ -4,32 +4,94 @@ All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
+## [0.4.0] — Unreleased
+
+### Added
+
+- `Grid`: a frozen value (`data_domain`, `num_time_samples`, `sample_rate_hz`,
+  `wdm_grid`) with `channel_shape`, `active_mask`, `observation_duration_s` and
+  `same_record`; `L1Data.grid` returns the data's grid and `enchilada.domains`
+  owns `DOMAINS`.
+
+### Changed
+
+- `Covariance` stores one stacked `(K, K, *channel_shape)` Hermitian array,
+  `blocks`, and carries its `grid`. `Covariance.like(data, pairs)` is the one
+  classmethod and captures the data's grid and channel order; `pair`, the
+  channel attributes and `in_basis` read it. Construction validates exact
+  Hermitian symmetry, realness per domain, positive variances, zero blocks at
+  inactive WDM pixels and positive definiteness with one batched Cholesky.
+  `copy()` revalidates; `deepcopy` and pickle restore without validating.
+- **Breaking:** the direct constructor is
+  `Covariance(blocks, *, channel_names, grid)`; the `pairs` attribute and
+  `form` are gone.
+- **Breaking:** the keyword `reference_data` is renamed `data` on `like` and
+  `check_compatible`.
+- **Breaking:** `check_compatible` checks only channel order and grid equality;
+  its shape, real/complex kind and positivity checks moved into the
+  constructor.
+- `Wheel(initial_covariance=...)` accepts a covariance on any grid of the same
+  record (same sample count and sample rate), not only the observation grid.
+- Wheel holds one covariance on the grid its owner published it on and hands a
+  deep copy to blocks registered on that grid. A block on another grid is
+  refused at `run` with `ValueError` naming both grids; a seed or returned
+  covariance on another grid than its block's is refused at `add` or `run`.
+- `transform` takes `L1Data` or `BlockState` only; a `BlockState` carries its
+  covariance through unchanged.
+- The examples and notebooks build covariances with `like` from the convention
+  `C = (Tobs / 2) S(f)` under `X = dt * rfft(x)` and read them with `pair`.
+- `L1Data` now rejects a bool or non-real `sample_rate_hz` with `TypeError` at
+  construction, matching `Grid`.
+
+### Removed
+
+- The full form, `form`, the module constant `FORMS`, the derived-basis cache
+  and `__getstate__`/`__setstate__` (replaced by `__reduce__`).
+- `Covariance.from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the
+  `psd(frequencies[, channel])` model protocol: a noise block computes its
+  variances on the grid of the data it received and passes them to `like`.
+  Migration:
+  - `from_variance(data, sigma**2)` → `like` with `sigma**2` per time sample,
+    `N * dt**2 * sigma**2` per frequency bin or `dt * sigma**2` per active WDM
+    pixel.
+  - `from_psd(data, model)` → `like` with `data.Tobs / 2 * model.psd(f)` per
+    channel at `f = np.fft.rfftfreq(data.N, data.dt)`.
+  - `noise_psd(ch, data)` → `2 * noise.pair(ch, ch) / data.Tobs`.
+  - `noise_variance(ch, data)` → `noise.pair(ch, ch)` on time data.
+- The covariance overload of `transform` with its `reference_data`, the
+  covariance translation seam and every `NotImplementedError` in the package.
+
 ## [0.3.0] — Unreleased
 
 ### Added
 
-- `Wheel.add(initial_block_result=...)` starts a block from an explicit injection
-  or other complete result without consuming campaign RNG draws. It uses the
+- `Wheel.add(initial_block_state=...)` starts a block from an explicit injection
+  or other complete physical state without consuming campaign RNG draws. It uses the
   usual validation, copied state, domain translation, and covariance ownership.
-  `check_block` accepts the same required starting result, demonstrated in
+  `check_block` accepts the same required starting state, demonstrated in
   `examples/create_block.ipynb`.
-- `transform` converts observations, covariance, and block results between time,
-  frequency, and WDM representations. `WDMGrid` validates dependent division
-  counts; the optional local WDM backend is loaded lazily.
-- Native WDM covariance and exact `TranslatedCovariance` operators preserve
-  induced correlations, statistical exclusions, quadratic forms, and coordinate
-  normalization without a diagonal approximation or dense observation matrix.
-- Per-block representation selection in `Wheel.add` translates the residual,
-  covariance, and current signal together and adopts returned outputs on the
-  canonical observation grid. A runnable translation example checks both grid
-  selectors and covariance weights against the real optional backend.
-- `DataCovariance` stores coefficient covariance on an explicit observation grid,
-  with point × channel × channel matrices, an inference mask, PSD/variance
-  factories, and marginal noise weights. Active matrices are positive definite.
-- `Ledger` provides defensive snapshots of each block's complete `BlockResult`:
-  optional `tdi_signal_contribution` and `noise_covariance`, physical
-  `model_parameters`, algorithm continuation `sampler_state`, and diagnostics
-  in `metadata`. `ledger.snapshot()` returns an independent dictionary for
+- `transform` converts observations and block states between time, frequency,
+  and WDM representations; covariance translation is a seam that raises
+  `NotImplementedError` until a translation layer is added. `WDMGrid` validates
+  dependent division counts; the optional local WDM backend is loaded lazily.
+- Per-block representation selection in `Wheel.add` translates the residual and
+  current signal together and adopts returned outputs on the canonical
+  observation grid. A runnable translation example checks both grid selectors
+  against the real optional backend.
+- `Covariance` stores noise covariance as one array per channel pair and is
+  read through channel attributes: `cov.X`, `cov.XY`, `cov.A`, `cov.AE`, with
+  reversed pairs as conjugate transposes and absent cross terms as zero. With
+  channels exactly X, Y, Z the A, E, T basis is derived on demand through the
+  orthonormal LDC combination, and the reverse; `in_basis` returns the whole
+  derived object. Each array has the data's channel shape S
+  (`form="diagonal"`) or S + S (`form="full"`); full-form arrays are checked
+  Hermitian per channel, with tolerance scaled to each pair of points'
+  variances, and stored exactly Hermitian. `like`, `from_psd`, `from_variance`,
+  `noise_psd`, `noise_variance`, and `check_compatible` take the `L1Data` the
+  covariance accompanies; the object carries no grid.
+- `Ledger` provides defensive snapshots of each block's complete `BlockState`:
+  optional `template` and `covariance`, and physical `parameters`.
+  `ledger.snapshot()` returns an independent dictionary for
   inspection; the Ledger itself compares by identity.
 - `examples/requirements-gb.txt` installs the external galactic-binary example
   stack separately from core dependencies. Its preflight checks and documented
@@ -37,42 +99,56 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Changed
 
+- Rename the block container to `BlockState` in `enchilada.block_state`, its
+  factories to `block_state` and `zero_block_state`, and its arguments to
+  `initial_block_state` and `current_block_state`, with no compatibility aliases.
+- `BlockState` publishes only `template`, `covariance`, and `parameters`, with
+  `with_covariance` for a replacement covariance. Sampler continuation and
+  diagnostics move to each block's own typed `State`; Wheel owns accepted
+  physical estimates and its RNG, and cannot roll back mutations to block-local
+  state. Independent campaigns require separate block instances.
+- `L1Data.wdm_grid` is automatically derived from WDM coefficient shapes and is
+  no longer a constructor argument. This read-only metadata is `None` for time
+  and frequency data. Select WDM divisions through `transform` or `Wheel.add`.
+- `L1Data` infers channel names from dictionary insertion order when omitted or
+  None. Explicit ordering remains supported for covariance alignment. Only
+  `channel_data` may be positional; all observation settings are keyword-only.
 - Change the project license from MIT to Apache License 2.0.
 - The core NumPy floor is 1.26.4, tested independently of the numeric-orbit
   dependencies on Python 3.12. CI and release gates also run optional WDM
   integration against a pinned backend revision.
 - Blocks require only `name` and
-  `sample(conditional_residual, noise_covariance, current_block_result, *, rng)`.
+  `sample(conditional_residual, covariance, current_block_state, *, rng)`.
   Both `Wheel.add` and `check_block` require a complete, non-None
-  `initial_block_result`; initialization is explicit campaign setup, with no
-  prior-drawing hook in the protocol. Instances hold fixed configuration; Wheel
-  owns accepted model and sampler state.
+  `initial_block_state`; initialization is explicit campaign setup, with no
+  prior-drawing hook in the protocol. Instances hold configuration and their own
+  sampler state; Wheel owns accepted physical estimates.
 - Wheel maintains independent `observed_data` and `working_residual`, the current
-  `noise_covariance`, a ledger, and its RNG. Each block receives the observations
-  minus all other blocks' accepted signals. Result, covariance, residual, and RNG
-  adoption is atomic; a failed call leaves that block's accepted state intact.
+  `covariance`, a ledger, and its RNG. Each block receives the observations
+  minus all other blocks' accepted signals. Published state, covariance, residual,
+  and RNG adoption is atomic; a failed call leaves that block's accepted estimate
+  intact, but does not restore its local sampler state.
   A persistent balanced tree caches signal sums for logarithmic block replacement
-  and exclusion. Internal covariance snapshots avoid repeated factorization while
-  new covariance publications retain validation.
-- Every block result is a complete snapshot. A missing signal means zero and
+  and exclusion.
+- Every block state is a complete physical snapshot. A missing template means zero and
   removes any previous contribution. Noise-only blocks publish covariance directly.
   The current covariance owner must always return its full covariance; another
   block taking ownership emits `NoiseOverwrittenWarning`.
-- Covariance is explicit: pass `initial_noise_covariance` to Wheel or publish it
-  from a block. `None` starts a campaign without covariance. PSD models are
-  converted with `DataCovariance.from_psd(reference_data, noise_psd_model)`;
-  `from_variance(reference_data, time_sample_variance)` builds time covariance.
-  Weighting helpers are methods of `DataCovariance`.
+- Covariance is explicit: pass `initial_covariance` to Wheel or publish it from
+  a block; `None` starts a campaign without one. `Covariance.from_psd(spectrum,
+  model)` needs frequency-domain data and fills every bin including DC with
+  `(Tobs / 2) S(f)`; `from_variance(data, variance)` needs time-domain data.
+  `L1Data.block_state`/`zero_block_state` take `covariance=`.
 - `L1Data` carries channel arrays and observation conventions, with descriptive
   field names and units. Scientific aliases `fs`, `dt`, `N`, `Tobs`, `df`, `fny`,
   and `t0` are supported notation. Orbit interfaces name GPS times, positions in
   metres, nominal arm length, and transfer frequency explicitly.
 - `on_cycle_complete(cycle_index, wheel)` runs after a full cycle accepts, with a
   zero-based index local to each `run`. It does not run for a partially failed cycle.
-- Examples prepare injected values or prior draws in setup, with explicit
-  continuation state and callback history
-  collection. EchoBlock counts accepted calls in `sampler_state["num_sample_calls"]`;
-  the GB example restores Eryn state and refreshes conditional likelihoods.
+- Examples prepare injected values or prior draws in setup, with block-owned
+  continuation state and callback history collection. EchoBlock records calls in
+  `state.num_sample_calls` and diagnostics in `state.metadata`; the GB example
+  keeps Eryn continuation state on the block and refreshes conditional likelihoods.
 - Release builds test the packaged source before publication and use a pinned
   PEP 517 backend. Dependency-floor tests preserve their resolved environment;
   notebook setup installs project extras before external model dependencies.
@@ -84,24 +160,18 @@ All notable changes to enchilada are documented here. The format follows
   invalid lengths or Fourier endpoints cannot bypass validation.
 - Fourier normalization widens complex64 input before scaling, preserving
   representable results that would otherwise underflow or overflow.
-- Covariance log determinants use Cholesky factors, avoiding NumPy 1.26 warnings
-  for valid complex positive-definite matrices without suppressing diagnostics.
 - `Block.name` is a read-only protocol property, so frozen dataclasses satisfy
   the same public typing contract as mutable configurations, including explicit
   protocol subclasses.
 - Manual release dispatches cannot publish, even when run against a tag.
-- Source archives include linked specifications and their reusable scientific
-  template. Historical API descriptions are labeled and removed-source links
-  target their recorded baseline.
+- Source archives include the examples and workflows linked from the README;
+  packaged documentation links are checked after extraction.
 - The optional GB example constrains NumPy below 2.4 because released Eryn 1.2.6
   calls the removed `numpy.in1d` function. This upper bound applies only to the
   example dependencies.
-- Covariance symmetry checks scale to each channel pair, so a loud channel cannot
-  hide asymmetry in quieter channels. Accepted numerical roundoff is symmetrized
-  before Cholesky validation and storage.
 - NumericOrbit copies its input arrays and rejects nonfinite query times, keeping
   caller mutations and invalid times from changing its interpolation bounds.
-- Observation and block-result spectra require real DC coefficients and real
+- Observation and block-state spectra require real DC coefficients and real
   Nyquist coefficients for even time-series lengths.
 - Residuals subtract aggregated signals from pristine observations, preserving
   the data when large block contributions cancel. Signal sums use at least
@@ -109,10 +179,13 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Removed
 
-- Noise storage and weighting helpers on observation data. Covariance is managed
-  separately through `DataCovariance` and Wheel.
+- Noise storage and weighting helpers on observation data, the `DataCovariance`
+  stacked point × channel × channel matrix with its `active_mask` and inactive
+  DC bin, the `TranslatedCovariance` operator, and the `apply`, `solve`,
+  `project`, `quadratic_form`, `log_determinant`, and `degrees_of_freedom`
+  methods. Covariance is one `Covariance` object managed by Wheel.
 - Separate noise-block and stateful-block contracts; signal, noise, and joint
-  models use the same stateless `Block` protocol.
+  models use the same `Block` protocol.
 - Heuristic signal-withdrawal warnings. An omitted or explicit zero signal removes
   the block's previous contribution.
 

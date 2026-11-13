@@ -1,25 +1,28 @@
 """Two conjugate Gibbs source blocks plus sampled white noise.
 
 Blocks retain fixed model configuration. Wheel owns the current parameters,
-BlockResult state, covariance, and sampling random stream. Caller-side helpers draw
+BlockState snapshots, covariance, and sampling random stream. Caller-side helpers draw
 complete initial results using a separate RNG; an on_cycle_complete callback collects
 posterior chains outside the blocks. These blocks request time-domain inputs;
-Wheel can also run them on Fourier or WDM observations using data_domain="time".
-Their likelihood requires native, fully active white time noise. Run with:
+Wheel also runs them on Fourier or WDM observations with data_domain="time",
+because the noise block publishes its covariance on that time grid. Their
+likelihood requires time-domain noise with independent channels.
+Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
 
 import numpy as np
 
-from enchilada import BlockResult, DataCovariance, L1Data, TranslatedCovariance, Wheel
+from enchilada import BlockState, Covariance, L1Data, Wheel
 
 
 class SineBlock:
     """A known-frequency sinusoid with amplitude prior N(0, prior_std**2).
 
-    The conditional combines this proper Gaussian prior with the white-noise
-    likelihood. Its waveform basis is derived from the supplied grid each call.
+    The conditional combines this proper Gaussian prior with the likelihood under
+    a per-sample noise variance on the data grid. Its waveform basis is derived
+    from the supplied grid each call.
     """
 
     def __init__(self, name: str, freq: float, prior_std: float = 10.0):
@@ -36,49 +39,45 @@ class SineBlock:
         )
         return np.sin(2.0 * np.pi * self.freq * t)
 
-    def _render(self, conditional_residual: L1Data, amplitude: float) -> BlockResult:
+    def _render(self, conditional_residual: L1Data, amplitude: float) -> BlockState:
         basis = self._basis(conditional_residual)
-        return conditional_residual.block_result(
+        return conditional_residual.block_state(
             {ch: amplitude * basis for ch in conditional_residual.channel_names},
-            model_parameters={"amplitude": amplitude},
+            parameters={"amplitude": amplitude},
         )
 
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
-        current_block_result: BlockResult,
+        covariance: Covariance | None,
+        current_block_state: BlockState,
         *,
         rng: np.random.Generator,
-    ) -> BlockResult:
-        if noise_covariance is None:
-            raise ValueError("SineBlock requires a white-noise covariance")
-        if (
-            noise_covariance.data_domain != "time"
-            or noise_covariance.active_mask is None
-            or not noise_covariance.active_mask.all()
-        ):
+    ) -> BlockState:
+        if covariance is None:
+            raise ValueError("SineBlock requires a noise covariance")
+        try:
+            covariance.check_compatible(conditional_residual)
+        except ValueError as exc:
             raise ValueError(
-                "SineBlock requires native time-domain noise with all samples active; "
-                "translated covariance can contain nonlocal correlations or exclusions"
-            )
-        if np.any(
-            noise_covariance.covariance_matrix[
-                :, ~np.eye(len(conditional_residual.channel_names), dtype=bool)
-            ]
+                "SineBlock requires time-domain white noise on the data grid"
+            ) from exc
+        channels = conditional_residual.channel_names
+        if any(
+            np.any(covariance.pair(first, second))
+            for first in channels
+            for second in channels
+            if first != second
         ):
             raise ValueError("SineBlock requires uncorrelated channels")
         basis = self._basis(conditional_residual)
-        # The toy uses a single channel with constant white-noise variance.
-        # Include every channel if the same independent model is used on more.
+        # One independent noise variance per time sample and channel.
         precision = 1.0 / self.prior_std**2
         weighted_data = 0.0
         for ch in conditional_residual.channel_names:
-            variance = noise_covariance.noise_variance(channel_name=ch)
-            precision += float(basis @ basis) / variance
-            weighted_data += (
-                float(conditional_residual.channel_data[ch] @ basis) / variance
-            )
+            weights = basis / covariance.pair(ch, ch)
+            precision += float(basis @ weights)
+            weighted_data += float(conditional_residual.channel_data[ch] @ weights)
         amplitude = rng.normal(weighted_data / precision, np.sqrt(1.0 / precision))
         return self._render(conditional_residual, float(amplitude))
 
@@ -93,24 +92,28 @@ class WhiteNoiseBlock:
             )
         self.name, self.shape, self.scale = name, shape, scale
 
-    def _render(self, conditional_residual: L1Data, variance: float) -> BlockResult:
+    def _render(self, conditional_residual: L1Data, variance: float) -> BlockState:
         if conditional_residual.data_domain != "time":
             raise ValueError("WhiteNoiseBlock requires time-domain data")
-        return BlockResult(
-            noise_covariance=DataCovariance.from_variance(
-                reference_data=conditional_residual, time_sample_variance=variance
+        return BlockState(
+            covariance=Covariance.like(
+                conditional_residual,
+                {
+                    ch: np.full(conditional_residual.num_time_samples, variance)
+                    for ch in conditional_residual.channel_names
+                },
             ),
-            model_parameters={"sigma": float(np.sqrt(variance))},
+            parameters={"sigma": float(np.sqrt(variance))},
         )
 
     def sample(
         self,
         conditional_residual: L1Data,
-        noise_covariance: DataCovariance | TranslatedCovariance | None,
-        current_block_result: BlockResult,
+        covariance: Covariance | None,
+        current_block_state: BlockState,
         *,
         rng: np.random.Generator,
-    ) -> BlockResult:
+    ) -> BlockState:
         if conditional_residual.data_domain != "time":
             raise ValueError("WhiteNoiseBlock requires time-domain data")
         # The noise block sees observations minus every signal contribution.
@@ -125,14 +128,14 @@ class WhiteNoiseBlock:
 
 def draw_sine_prior(
     block: SineBlock, reference_data: L1Data, *, rng: np.random.Generator
-) -> BlockResult:
+) -> BlockState:
     """Caller-side prior draw on the time grid requested by this model."""
     return block._render(reference_data, float(rng.normal(0.0, block.prior_std)))
 
 
 def draw_white_noise_prior(
     block: WhiteNoiseBlock, reference_data: L1Data, *, rng: np.random.Generator
-) -> BlockResult:
+) -> BlockState:
     """Prepare a complete initial noise result before registering the block."""
     return block._render(reference_data, float(block.scale / rng.gamma(block.shape)))
 
@@ -151,9 +154,8 @@ def make_observed(seed: int = 0) -> L1Data:
         + rng.normal(0.0, TRUTH["sigma"], n)
     )
     return L1Data(
-        channel_data={"A": data},
+        {"A": data},
         sample_rate_hz=fs,
-        channel_names=("A",),
         tdi_generation="2.0",
         physical_observable="fractional_frequency",
         start_time_gps=0.0,
@@ -174,7 +176,7 @@ def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
         block = SineBlock(name=name, freq=frequency)
         wheel.add(
             block,
-            initial_block_result=draw_sine_prior(
+            initial_block_state=draw_sine_prior(
                 block, observed, rng=initialization_rng
             ),
             data_domain="time",
@@ -182,7 +184,7 @@ def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
     noise = WhiteNoiseBlock(name="noise")
     wheel.add(
         noise,
-        initial_block_result=draw_white_noise_prior(
+        initial_block_state=draw_white_noise_prior(
             noise, observed, rng=initialization_rng
         ),
         data_domain="time",
@@ -192,7 +194,7 @@ def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
     def collect(cycle: int, w: Wheel) -> None:
         for name in chains:
             parameter = "sigma" if name == "noise" else "amplitude"
-            chains[name].append(w.ledger[name].model_parameters[parameter])
+            chains[name].append(w.ledger[name].parameters[parameter])
         if (cycle + 1) % 100 == 0:
             rms = float(np.sqrt(np.mean(w.residual().channel_data["A"] ** 2)))
             print(

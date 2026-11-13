@@ -13,17 +13,15 @@ import time
 
 import numpy as np
 
-from enchilada import BlockResult, DataCovariance, L1Data, Wheel
+from enchilada import BlockState, Covariance, L1Data, Wheel
 
 
 class FixedSignal:
     def __init__(self, name):
         self.name = name
 
-    def sample(
-        self, conditional_residual, noise_covariance, current_block_result, *, rng
-    ):
-        return current_block_result
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+        return current_block_state
 
 
 def measure(num_blocks, num_samples, num_cycles, repeats):
@@ -34,16 +32,18 @@ def measure(num_blocks, num_samples, num_cycles, repeats):
         tdi_generation="2.0",
         physical_observable="strain",
     )
-    covariance = DataCovariance.from_variance(observed, 1.0)
+    covariance = Covariance.like(
+        observed, {name: np.ones(num_samples) for name in observed.channel_names}
+    )
     wheel = Wheel(observed, covariance, random_seed=0)
     for index in range(num_blocks):
-        initial = BlockResult(
-            tdi_signal_contribution={
+        initial = BlockState(
+            template={
                 name: np.full_like(values, 0.5 / num_blocks)
                 for name, values in observed.channel_data.items()
             }
         )
-        wheel.add(FixedSignal(str(index)), initial_block_result=initial)
+        wheel.add(FixedSignal(str(index)), initial_block_state=initial)
     wheel.run(1)
     elapsed = []
     for _ in range(repeats):
