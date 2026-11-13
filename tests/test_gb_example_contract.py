@@ -106,7 +106,7 @@ def test_gb_rejects_covariance_on_a_different_grid(gb_model, spectral_context):
         )
 
 
-def test_gb_context_requires_independent_channels_and_one_psd_value_per_bin(gb_model):
+def test_gb_context_requires_independent_channels_and_returns_psd_units(gb_model):
     data = L1Data(
         channel_data={ch: np.zeros(33, dtype=complex) for ch in ("A", "E")},
         sample_rate_hz=1.0,
@@ -121,9 +121,6 @@ def test_gb_context_requires_independent_channels_and_one_psd_value_per_bin(gb_m
     correlated = Covariance.like(data, {"A": ones, "E": ones, "AE": np.full(33, 0.5)})
     with pytest.raises(ValueError, match="uncorrelated channels"):
         block._context(data, correlated)
-    full = Covariance.like(data, {"A": np.eye(33), "E": np.eye(33)})
-    with pytest.raises(ValueError, match="one PSD value per bin"):
-        block._context(data, full)
     _, psds = block._context(data, Covariance.like(data, {"A": ones, "E": ones}))
     assert set(psds) == {"A", "E"}
     np.testing.assert_allclose(psds["A"], 2.0 * ones / data.Tobs)

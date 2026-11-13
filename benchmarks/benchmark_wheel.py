@@ -32,7 +32,9 @@ def measure(num_blocks, num_samples, num_cycles, repeats):
         tdi_generation="2.0",
         physical_observable="strain",
     )
-    covariance = Covariance.from_variance(observed, 1.0)
+    covariance = Covariance.like(
+        observed, {name: np.ones(num_samples) for name in observed.channel_names}
+    )
     wheel = Wheel(observed, covariance, random_seed=0)
     for index in range(num_blocks):
         initial = BlockState(

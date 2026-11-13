@@ -4,9 +4,9 @@ Blocks retain fixed model configuration. Wheel owns the current parameters,
 BlockState snapshots, covariance, and sampling random stream. Caller-side helpers draw
 complete initial results using a separate RNG; an on_cycle_complete callback collects
 posterior chains outside the blocks. These blocks request time-domain inputs;
-Wheel can also run them on Fourier or WDM observations using data_domain="time"
-once covariance translation lands (design spec section 6). Their likelihood
-requires time-domain noise with one constant white-noise variance per channel.
+Wheel also runs them on Fourier or WDM observations with data_domain="time",
+because the noise block publishes its covariance on that time grid. Their
+likelihood requires time-domain noise with independent channels.
 Run with:
 
     uv run --no-sync python examples/toy_fit.py
@@ -54,12 +54,7 @@ class SineBlock:
         rng: np.random.Generator,
     ) -> BlockState:
         if covariance is None:
-            raise ValueError("SineBlock requires a white-noise covariance")
-        if conditional_residual.data_domain != "time" or covariance.form != "diagonal":
-            raise ValueError(
-                "SineBlock requires time-domain noise with one constant "
-                "white-noise variance per channel"
-            )
+            raise ValueError("SineBlock requires a noise covariance")
         try:
             covariance.check_compatible(conditional_residual)
         except ValueError as exc:
@@ -75,16 +70,13 @@ class SineBlock:
         ):
             raise ValueError("SineBlock requires uncorrelated channels")
         basis = self._basis(conditional_residual)
-        # The toy uses a single channel with constant white-noise variance.
-        # Include every channel if the same independent model is used on more.
+        # One independent noise variance per time sample and channel.
         precision = 1.0 / self.prior_std**2
         weighted_data = 0.0
         for ch in conditional_residual.channel_names:
-            variance = covariance.noise_variance(ch, conditional_residual)
-            precision += float(basis @ basis) / variance
-            weighted_data += (
-                float(conditional_residual.channel_data[ch] @ basis) / variance
-            )
+            weights = basis / covariance.pair(ch, ch)
+            precision += float(basis @ weights)
+            weighted_data += float(conditional_residual.channel_data[ch] @ weights)
         amplitude = rng.normal(weighted_data / precision, np.sqrt(1.0 / precision))
         return self._render(conditional_residual, float(amplitude))
 
@@ -103,8 +95,12 @@ class WhiteNoiseBlock:
         if conditional_residual.data_domain != "time":
             raise ValueError("WhiteNoiseBlock requires time-domain data")
         return BlockState(
-            covariance=Covariance.from_variance(
-                reference_data=conditional_residual, time_sample_variance=variance
+            covariance=Covariance.like(
+                conditional_residual,
+                {
+                    ch: np.full(conditional_residual.num_time_samples, variance)
+                    for ch in conditional_residual.channel_names
+                },
             ),
             parameters={"sigma": float(np.sqrt(variance))},
         )

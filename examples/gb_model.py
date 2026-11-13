@@ -19,9 +19,10 @@ from enchilada import BlockState, Covariance, L1Data
 class FixedLISANoise:
     """One-sided LISA PSD from lisatools ``get_sensitivity`` (A == E).
 
-    The only contract an enchilada noise object needs: ``psd(freqs[, channel])``.
-    ``Covariance.from_psd`` evaluates the model at every rfft bin including
-    ``f = 0``, so frequencies are floored at ``minimum_frequency_hz``.
+    User code: enchilada defines no PSD protocol. The notebook evaluates
+    ``psd`` at every rfft bin including ``f = 0`` and hands
+    ``(Tobs / 2) * psd(f)`` per channel to ``Covariance.like``, so
+    frequencies are floored at ``minimum_frequency_hz``.
     """
 
     def __init__(self, minimum_frequency_hz: float = 1e-5):
@@ -132,8 +133,9 @@ class GBBlock:
 
     Register with ``wheel.add(block, initial_block_state=initial,
     data_domain="frequency")``. This narrowband likelihood requires a
-    frequency-domain covariance on the data grid, with one PSD value per bin and
-    independent channels.
+    frequency-domain covariance on the data grid with independent channels; it
+    reads each channel's bin variances and converts them to PSD units with
+    ``2 C / Tobs``.
     """
 
     SUPPORTED_CHANNELS = ("A", "E")
@@ -197,10 +199,6 @@ class GBBlock:
                 f"{self.name}: this narrowband likelihood requires a "
                 "frequency-domain covariance on the data grid"
             ) from exc
-        if covariance.form != "diagonal":
-            raise ValueError(
-                f"{self.name}: this likelihood needs one PSD value per bin"
-            )
         channels = conditional_residual.channel_names
         if any(
             np.any(covariance.pair(first, second))
@@ -211,8 +209,11 @@ class GBBlock:
             raise ValueError(
                 f"{self.name}: this likelihood requires uncorrelated channels"
             )
+        # The likelihood is written in one-sided PSD units: with X = dt * rfft(x)
+        # a bin variance C is S = 2 C / Tobs.
         return _new_gb(), {
-            ch: covariance.noise_psd(ch, conditional_residual) for ch in channels
+            ch: 2.0 * covariance.pair(ch, ch) / conditional_residual.Tobs
+            for ch in channels
         }
 
     def _waveform(self, gb, params, conditional_residual):
