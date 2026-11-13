@@ -145,8 +145,7 @@ class Wheel:
         """The current covariance, as an independent copy."""
         if self._covariance is None:
             return None
-        # Unbound call: copy without trusting a subclass's overridden methods.
-        return Covariance._copy_validated(self._covariance)
+        return deepcopy(self._covariance)
 
     @property
     def ledger(self) -> Ledger:

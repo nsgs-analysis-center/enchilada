@@ -1019,9 +1019,11 @@ class TestObservedDataIsChecked:
         mismatched_grid = make_observed(np.random.default_rng(1), num_time_samples=32)
         covariance = white_covariance(mismatched_grid, 1.0)
         unchecked = UncheckedCovariance(
-            dict(covariance.pairs), channel_names=covariance.channel_names
+            covariance.blocks,
+            channel_names=covariance.channel_names,
+            grid=covariance.grid,
         )
-        with pytest.raises(ValueError, match="shape"):
+        with pytest.raises(ValueError, match="grid"):
             Wheel(observed, initial_covariance=unchecked)
 
         class PublishesUnchecked(EchoBlock):
@@ -1032,7 +1034,7 @@ class TestObservedDataIsChecked:
 
         wheel = Wheel(observed, initial_covariance=white_covariance(observed, 1.0))
         wheel.add(PublishesUnchecked("noise"), initial_block_state=BlockState())
-        with pytest.raises(ValueError, match="shape"):
+        with pytest.raises(ValueError, match="grid"):
             wheel.run(1)
         assert wheel.covariance.A.shape == observed.channel_data["A"].shape
         np.testing.assert_array_equal(wheel.covariance.A, 1.0)
@@ -1040,8 +1042,9 @@ class TestObservedDataIsChecked:
         # On the right grid, validation passes; only the copy keeps the stored
         # object a plain Covariance rather than the caller's subclass.
         compatible = UncheckedCovariance(
-            dict(white_covariance(observed, 2.0).pairs),
+            white_covariance(observed, 2.0).blocks,
             channel_names=observed.channel_names,
+            grid=observed.grid,
         )
         wheel = Wheel(observed, initial_covariance=compatible)
         assert type(wheel._covariance) is Covariance

@@ -308,7 +308,7 @@ def test_rejected_noise_result_preserves_signal_covariance_state_and_rng(
     actual_block, expected_block = FailsOnce(), NoiseOnly()
     actual.add(actual_block, initial_block_state=initial)
     expected.add(expected_block, initial_block_state=initial)
-    error = "must return.*covariance" if failure == "omitted" else "shape"
+    error = "must return.*covariance" if failure == "omitted" else "grid"
     with pytest.raises(ValueError, match=error):
         actual.run(1)
     assert actual_block.state.steps == 1

@@ -122,7 +122,7 @@ def test_conversion_rejects_missing_or_mismatched_reference():
         transform(result, "frequency")
     with pytest.raises(ValueError, match="length|shape"):
         transform(result, "frequency", reference_data=observations(32))
-    with pytest.raises(ValueError, match="shape"):
+    with pytest.raises(ValueError, match="grid"):
         transform(
             white_covariance(data, 1.0),
             "time",
@@ -285,11 +285,11 @@ def test_covariance_cross_domain_transform_is_the_seam():
         transform(cov, "frequency", reference_data=data)
     with pytest.raises(ValueError, match="reference_data"):
         transform(cov, "time")
-    with pytest.raises(ValueError, match="shape"):
+    with pytest.raises(ValueError, match="grid"):
         transform(cov, "time", reference_data=observations(32))
     # Validation precedes the domain decision, so a cross-domain target with an
     # incompatible reference is still a ValueError.
-    with pytest.raises(ValueError, match="shape"):
+    with pytest.raises(ValueError, match="grid"):
         transform(cov, "frequency", reference_data=observations(32))
     # The target grid is resolved first, so a bad count fails as ValueError.
     with pytest.raises(ValueError, match="positive even integer"):
@@ -305,7 +305,9 @@ def test_covariance_seam_copies_through_covariance_methods():
             pass
 
     def unchecked(cov):
-        return UncheckedCovariance(dict(cov.pairs), channel_names=cov.channel_names)
+        return UncheckedCovariance(
+            cov.blocks, channel_names=cov.channel_names, grid=cov.grid
+        )
 
     data = observations()
     same = transform(
@@ -313,7 +315,7 @@ def test_covariance_seam_copies_through_covariance_methods():
     )
     assert type(same) is Covariance
     short = unchecked(white_covariance(observations(32), 2.0))
-    with pytest.raises(ValueError, match="shape"):
+    with pytest.raises(ValueError, match="grid"):
         transform(short, "time", reference_data=data)
 
 

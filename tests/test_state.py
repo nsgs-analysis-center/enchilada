@@ -180,16 +180,16 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
 def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domain):
     covariance = white_covariance(observed, 1)
     wheel = Wheel(observed, initial_covariance=covariance)
-    covariance.pairs[("A", "A")].setflags(write=True)
-    covariance.pairs[("A", "A")][:] *= 2
+    covariance.blocks.setflags(write=True)
+    covariance.A[:] *= 2
     inspected = wheel.covariance
-    inspected.pairs[("A", "A")].setflags(write=True)
-    inspected.pairs[("A", "A")][:] *= 3
+    inspected.blocks.setflags(write=True)
+    inspected.A[:] *= 3
 
     class EditsNoise(Counter):
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
-            covariance.pairs[("A", "A")].setflags(write=True)
-            covariance.pairs[("A", "A")][:] *= 4
+            covariance.blocks.setflags(write=True)
+            covariance.A[:] *= 4
             return current_block_state
 
     wheel.add(

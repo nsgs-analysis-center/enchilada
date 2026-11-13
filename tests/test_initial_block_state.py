@@ -169,8 +169,8 @@ def test_seed_snapshot_is_independent_including_noise_and_nested_parameters(obse
     initial.template["A"][:] = 100
     initial.parameters["amplitude"] = 100
     initial.parameters["positions"][0][:] = 100
-    initial.covariance.pairs[("A", "A")].setflags(write=True)
-    initial.covariance.pairs[("A", "A")][:] = 100
+    initial.covariance.blocks.setflags(write=True)
+    initial.covariance.A[:] = 100
     accepted = wheel.ledger["seeded"]
     assert accepted.parameters["amplitude"] == 2.0
     np.testing.assert_array_equal(accepted.parameters["positions"][0], [1, 2])
@@ -216,7 +216,7 @@ def test_invalid_seed_leaves_registration_and_rng_unchanged(
         "type": (TypeError, "initial_block_state must be a BlockState"),
         "shape": (ValueError, "length 3, expected"),
         "nonfinite": (ValueError, "finite"),
-        "covariance": (ValueError, "shape"),
+        "covariance": (ValueError, "grid"),
         "copy": (RuntimeError, "seed state cannot be copied"),
     }[failure]
     wheel = Wheel(observed, random_seed=7)
