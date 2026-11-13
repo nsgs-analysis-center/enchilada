@@ -1,8 +1,12 @@
 """Representation metadata independent of any optional transform backend."""
 
+import numbers
 from dataclasses import dataclass
 
 import numpy as np
+
+DOMAINS = ("time", "frequency", "wdm")
+"""Valid values for a data domain."""
 
 
 def _positive_even_integer(value: int, name: str) -> int:
@@ -51,6 +55,87 @@ class WDMGrid:
         active = np.ones(self.array_shape, dtype=bool)
         active[[0, -1], 1::2] = False
         return active
+
+
+@dataclass(frozen=True)
+class Grid:
+    """The layout of one channel's array: domain, sample count, rate, WDM grid.
+
+    Two grids of one record in different domains compare unequal; use
+    :meth:`same_record` for "the same time series". The epoch is not part of a
+    grid: a stationary noise model has no epoch and ``transform`` does not
+    shift records.
+    """
+
+    data_domain: str
+    num_time_samples: int
+    sample_rate_hz: float
+    wdm_grid: WDMGrid | None = None
+
+    def __post_init__(self) -> None:
+        if self.data_domain not in DOMAINS:
+            raise ValueError(
+                f"data_domain must be one of {DOMAINS}, got {self.data_domain!r}"
+            )
+        count = self.num_time_samples
+        if (
+            not isinstance(count, (int, np.integer))
+            or isinstance(count, bool)
+            or count <= 0
+        ):
+            raise ValueError(
+                f"num_time_samples must be a positive integer, got {count!r}"
+            )
+        object.__setattr__(self, "num_time_samples", int(count))
+        rate = self.sample_rate_hz
+        if isinstance(rate, bool) or not isinstance(rate, numbers.Real):
+            raise TypeError(f"sample_rate_hz must be a real number, got {rate!r}")
+        if not np.isfinite(rate) or rate <= 0:
+            raise ValueError(
+                f"sample_rate_hz must be positive and finite, got {rate!r}"
+            )
+        object.__setattr__(self, "sample_rate_hz", float(rate))
+        if self.data_domain == "wdm":
+            if not isinstance(self.wdm_grid, WDMGrid):
+                raise TypeError("wdm_grid must be a WDMGrid when data_domain='wdm'")
+            if self.wdm_grid.num_time_samples != self.num_time_samples:
+                raise ValueError(
+                    "wdm_grid division product must equal num_time_samples: "
+                    f"{self.wdm_grid.num_time_samples} != {self.num_time_samples}"
+                )
+        elif self.wdm_grid is not None:
+            raise ValueError(
+                f"wdm_grid applies only to data_domain='wdm', got {self.data_domain!r}"
+            )
+
+    @property
+    def channel_shape(self) -> tuple[int, ...]:
+        """Shape of one channel's array on this grid."""
+        if self.data_domain == "time":
+            return (self.num_time_samples,)
+        if self.data_domain == "frequency":
+            return (self.num_time_samples // 2 + 1,)
+        assert self.wdm_grid is not None
+        return self.wdm_grid.array_shape
+
+    @property
+    def active_mask(self) -> np.ndarray:
+        """Independent boolean mask of the points that carry data."""
+        if self.wdm_grid is None:
+            return np.ones(self.channel_shape, dtype=bool)
+        return self.wdm_grid.active_mask
+
+    @property
+    def observation_duration_s(self) -> float:
+        """``num_time_samples / sample_rate_hz``."""
+        return self.num_time_samples / self.sample_rate_hz
+
+    def same_record(self, other: "Grid") -> bool:
+        """True when both grids describe one time series: same count and rate."""
+        return (
+            self.num_time_samples == other.num_time_samples
+            and self.sample_rate_hz == other.sample_rate_hz
+        )
 
 
 def resolve_wdm_grid(

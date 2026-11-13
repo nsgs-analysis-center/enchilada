@@ -5,7 +5,7 @@ from enchilada.block import Block
 from enchilada.block_state import BlockState
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
-from enchilada.domains import WDMGrid
+from enchilada.domains import Grid, WDMGrid
 from enchilada.ledger import Ledger
 from enchilada.orbits import NumericOrbit, Orbit
 from enchilada.translation import transform
@@ -19,6 +19,7 @@ except PackageNotFoundError:  # pragma: no cover - source tree without install
 __all__ = [
     "Block",
     "Covariance",
+    "Grid",
     "Ledger",
     "NoiseOverwrittenWarning",
     "NumericOrbit",

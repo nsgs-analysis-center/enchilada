@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 from typing import assert_type
 from enchilada import (
-    Block, L1Data, Covariance, BlockState, Wheel, WDMGrid,
+    Block, L1Data, Covariance, BlockState, Wheel, WDMGrid, Grid,
     transform,
 )
 from enchilada.testing import EchoBlock, check_block
@@ -35,6 +35,7 @@ explicit_none = L1Data(channel_data={"A": np.zeros(8)}, channel_names=None,
                        sample_rate_hz=1.0, tdi_generation="2.0",
                        physical_observable="strain")
 assert_type(explicit_none.channel_names, tuple[str, ...])
+assert_type(r.grid, Grid)
 print(r.Tobs)      # correct spelling: must NOT error
 print(r.Tobbs)     # typo in expression position
 y: str = r.T_obs   # typo in assignment position
@@ -236,6 +237,7 @@ def test_public_surface_is_pinned():
     assert enchilada.__all__ == [
         "Block",
         "Covariance",
+        "Grid",
         "Ledger",
         "NoiseOverwrittenWarning",
         "NumericOrbit",

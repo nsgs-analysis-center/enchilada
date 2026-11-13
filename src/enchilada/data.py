@@ -5,7 +5,7 @@ import numpy as np
 
 from enchilada.block_state import BlockState, check_on_grid, check_rfft_endpoints
 from enchilada.covariance import Covariance
-from enchilada.domains import WDMGrid, check_wdm_coefficients
+from enchilada.domains import DOMAINS, Grid, WDMGrid, check_wdm_coefficients
 from enchilada.orbits import Orbit
 
 
@@ -67,8 +67,8 @@ class L1Data:
     orbit_ephemeris: Orbit | None = None
     wdm_grid: WDMGrid | None = field(default=None, init=False)
 
-    DOMAINS: ClassVar[tuple[str, ...]] = ("time", "frequency", "wdm")
-    """Valid values for `data_domain`."""
+    DOMAINS: ClassVar[tuple[str, ...]] = DOMAINS
+    """Valid values for `data_domain`; the same tuple as `enchilada.domains.DOMAINS`."""
 
     RECOMMENDED_OBSERVABLES: ClassVar[tuple[str, ...]] = (
         "fractional_frequency",
@@ -358,6 +358,13 @@ class L1Data:
     def nyquist_frequency_hz(self) -> float:
         """Nyquist frequency, in Hz. Alias: `fny`."""
         return self.sample_rate_hz / 2.0
+
+    @property
+    def grid(self) -> Grid:
+        """The channel array layout: domain, sample count, rate and WDM grid."""
+        return Grid(
+            self.data_domain, self.num_time_samples, self.sample_rate_hz, self.wdm_grid
+        )
 
     # ---- conventional short-name aliases --------------------------------
 
