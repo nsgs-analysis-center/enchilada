@@ -2,24 +2,31 @@
 
 Date: 2026-11-11
 Status: approved design (five sections approved in discussion 2026-11-11; the PSD
-and variance helpers removed on review 2026-11-12); awaiting the user's review
-of the written spec
+and variance helpers removed on review 2026-11-12; sections 2.8, 3 and 3.5
+withdrawn on 2026-11-12 after domainia's 3.0 spec, user decision "core now,
+components later"); approved for planning
 Branch: `covariance-simplification` (from `main` at a827b69)
 Supersedes: sections 1, 3.2 to 3.4, 4 and 6 of
 `2026-11-10-covariance-object-design.md`, and
 section 4 (the enchilada adapter) of domainia's
 `docs/superpowers/specs/2026-10-31-domainia-general-library-design.md`, which still
 names `TranslatedCovariance` and `DataCovariance` as they were before 0.3.0.
+Coordinated with domainia's
+`docs/superpowers/specs/2026-11-12-domainia-translation-core-design.md` (3.0),
+whose section 8 asks for the withdrawals recorded here. The noise-components
+layer it describes is a separate enchilada spec.
 
 ## Goal
 
 Make `Covariance` smaller and easier to maintain without removing a capability
 anything uses (a convenience that is one line of `like` away is not a
-capability), and connect it to the translation layer that exists. `domainia`
-(`~/Documents/lisa/domainia`, 2.0.0) translates a covariance lazily as an
-*operator* seen from another domain; it never produces covariance arrays on the
-target grid. The seam left in 0.3.0 assumed arrays would come back, and four of
-its seven strict xfails assert a diagonal does. This design replaces that seam.
+capability), and remove the covariance translation seam left in 0.3.0. That seam
+assumed covariance arrays would come back on another grid, and four of its
+seven strict xfails assert a diagonal does. domainia 3.0 (spec 2026-11-12) will
+instead evaluate noise models per grid and never moves a covariance array
+between domains. This design keeps every block on the grid of the covariance it
+reads; delivering a noise model to a block on another grid is the components
+layer, a separate spec that follows domainia 3.0.
 
 ## Findings that drove the design
 
@@ -40,21 +47,17 @@ call to a model's `psd` inside the package is in `from_psd`: the framework
 never needs a PSD, only a covariance on a grid, so PSD knowledge belongs to
 the noise blocks.
 
-domainia facts checked against its source:
+domainia facts:
 
-- `translate_operator(op, target)` returns a `TranslatedOperator` holding a
-  reference to the native operator; every call moves `{channel: array}` dicts
-  with `transform` and applies the coordinate Jacobian. No dense matrix is built.
-- The `Operator` protocol is `domain`, `channel_names`, `degrees_of_freedom`,
-  `apply`, `solve`, `project`, `quadratic_form`, `log_determinant`, acting on
-  the stacked real coordinates: time samples; active WDM cells; for Fourier
-  `Re X_0`, `sqrt(2) Re X_k`, `sqrt(2) Im X_k` and `Re X_{N/2}` for even `N`.
+- Its 3.0 spec (2026-11-12, approved) deletes the operator and lazy-translation
+  layer (`translate.py`, `Operator`, `TranslatedOperator`, `translate_operator`,
+  `domains.py`) and every likelihood. It keeps `transform` on arrays and adds
+  `frequency_covariance` and `wdm_covariance`, which evaluate a K-by-K noise
+  model on a frequency or WDM grid. No function moves a covariance array between
+  domains, so nothing in domainia can back the 0.3.0 seam.
 - Both packages use `X = dt * rfft(x)` for frequency data, the dense
   `(Nf + 1, Nt)` WDM layout, the same active-pixel rule (edge bands active at
   even time index) and the Meyer window. No units shim is needed.
-- domainia has no frequency-native per-bin operator (`PointwiseOperator` takes
-  time or WDM; `DenseOperator` is `(KN, KN)`), so the native operator for an
-  enchilada covariance lives in enchilada.
 - The domainia repository is private and its PyPI name belongs to an unrelated
   package.
 
@@ -62,13 +65,13 @@ domainia facts checked against its source:
 
 | Question | Decision |
 |---|---|
-| What an off-grid block receives | An operator it queries, backed by `domainia.translate_operator` |
+| What a block on another grid than the covariance receives | Nothing yet: the Wheel refuses the run with `ValueError` naming both grids. Delivery through noise components is the separate spec that follows domainia 3.0. (Withdrawn 2026-11-12: an operator backed by `domainia.translate_operator`, which domainia 3.0 deletes.) |
 | Channel features | Keep cross terms, the positive-definiteness check and the XYZ to AET derivation |
 | Grid on the object | Yes; reverses the 2026-11-10 grid-free decision |
 | Storage layout | One stacked `(K, K, *S)` Hermitian array; the friendly dict stays the input; reverses the 2026-11-10 one-array-per-pair decision |
 | The full form | Removed |
 | PSD and variance helpers | Removed: `from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the `psd(...)` model protocol; a noise block builds its covariance with `like` and reads `pair` |
-| domainia dependency | Optional and private; no PyPI extra; the core stays NumPy-only |
+| domainia dependency | None in this release; the core stays NumPy-only |
 | Where the Wheel keeps the covariance | One native `Covariance` on its owner's grid; nothing is translated back |
 | Version | 0.4.0 |
 
@@ -116,7 +119,7 @@ grid: Grid                         # keyword-only
 `blocks[i, j]` is the covariance between channels `i` and `j` at every point of
 the grid, `E[x_i conj(x_j)]`; `blocks[j, i]` is its complex conjugate. There is
 one form: one value per point. A covariance between different points is out of
-scope (it was the removed full form, and domainia's `DenseOperator` covers it).
+scope (it was the removed full form).
 
 ### 2.2 Construction and validation
 
@@ -131,8 +134,8 @@ scope (it was the removed full form, and domainia's `DenseOperator` covers it).
    element. `like` (section 2.3) and `in_basis` produce exact symmetry; a caller
    assembling a product symmetrises first.
 5. Real where the domain requires it. Time and WDM grids: a complex dtype
-   raises `ValueError`, as in domainia, because complex blocks are valid on a
-   frequency grid so the dtype is a wrong value, not a wrong kind. Frequency
+   raises `ValueError`, because complex blocks are valid on a frequency grid,
+   so the dtype is a wrong value, not a wrong kind. Frequency
    grids: every diagonal entry
    `blocks[i, i]` has zero imaginary part at every bin, and every entry at DC
    and at Nyquist for even `N` has zero imaginary part (`ValueError`).
@@ -236,128 +239,52 @@ Two copy paths, each with one job:
   hooks with one method. The cost of a snapshot is one array copy, as in
   0.3.0; `benchmarks/benchmark_wheel.py` gates it.
 
-### 2.8 Operator methods
+### 2.8 No likelihood methods
 
-`Covariance` implements the five methods of domainia's `Operator` protocol in
-NumPy, on its own grid, with no domainia import. `values` is a
-`{channel: array}` mapping or an `L1Data`; its channels must be exactly
-`channel_names` (`ValueError`), each array `grid.channel_shape` and finite
-(`ValueError`), complex only on a frequency grid (`ValueError`), and real at DC
-and even-`N` Nyquist on a frequency grid (`ValueError`). `apply`, `solve` and
-`project` return dicts in channel order with exact zeros at inactive WDM pixels.
+`Covariance` has no `apply`, `solve`, `project`, `quadratic_form` or
+`log_determinant`. Likelihoods, their real-coordinate weights (an interior
+frequency bin is two real coordinates; DC and the even-`N` Nyquist bin are one)
+and any Jacobian between domains belong to blocks, as domainia's 3.0 spec puts
+it (its section 1). The 0.3.0 removal of those methods stands. (Withdrawn
+2026-11-12: NumPy implementations of domainia's `Operator` protocol on
+`Covariance`.)
 
-| Method | Value |
-|---|---|
-| `apply(values)` | `C_p x_p` at every point: `einsum("ij...,j...->i...", blocks, X)` |
-| `solve(values)` | `C_p^{-1} x_p` at every active point: one batched `np.linalg.solve` |
-| `project(values)` | `x_p` at active points, zero elsewhere |
-| `quadratic_form(values)` | `sum_p w_p * Re(x_p^H C_p^{-1} x_p)` |
-| `log_determinant()` | `sum over active p of w_p * log det C_p`, from the Cholesky factors |
-| `degrees_of_freedom` | `K * num_time_samples` in every domain |
+## 3. The seam
 
-`w_p` is the real-coordinate weight that makes a translated quadratic form
-equal the native one. Time samples and WDM pixels weigh 1 (0 at inactive
-pixels). On a frequency grid the interior bins `1 .. (N - 1) // 2` weigh 2,
-because each complex coefficient is two real coordinates
-`sqrt(2) Re X_k, sqrt(2) Im X_k`; DC and the even-`N` Nyquist bin weigh 1. By
-Parseval for `X = dt * rfft(x)`, `sum_n x_n^2 = (X_0^2 + 2 sum_int |X_k|^2 +
-X_{N/2}^2) / (N dt^2)`, and white noise has `C_k = N dt^2 sigma^2` at every bin,
-so the weighted frequency form equals the time form `sum_n x_n^2 / sigma^2`
-exactly, which the unweighted sum does not. Half the quadratic form is the
-Whittle exponent `sum_int |X_k|^2 / C_k + 0.5 sum_end X_k^2 / C_k`. The
-real-coordinate covariance of one interior bin with `K` correlated channels is
-the `2K`-by-`2K` embedding `[[Re C, -Im C], [Im C, Re C]]`, whose determinant
-is `|det C|^2`, which is where the weight 2 on `log det C_k` comes from. A block
-writes its Gaussian log-likelihood as
-`-0.5 * (cov.quadratic_form(residual) + cov.log_determinant())` in any domain.
+(Withdrawn 2026-11-12: `_domainia.py`, `NativeOperator`, `TranslatedCovariance`,
+`NoiseModel`, the covariance overload of `transform` returning a translated
+view, and the domainia CI lane. domainia 3.0 deletes the layer they were built
+on, and its section 8 asks for these withdrawals.)
 
-`apply`, `solve` and `project` set the DC and even-`N` Nyquist entries of a
-frequency result to their real part explicitly, as domainia's `transform` does
-for its own output, so a `TranslatedCovariance` never refuses a native result
-over a `1e-17` imaginary residue from the complex solver.
+### 3.1 No covariance translation
 
-## 3. The adapter and the seam
+`transform` no longer accepts a `Covariance`: its overloads become
+`L1Data | BlockState`, and a `Covariance` argument raises `TypeError` saying
+that a covariance carries its grid and does not translate, and that `copy()`
+makes an independent copy. `reference_data` keeps its one role, the source grid
+of a `BlockState` template. `transform(block_state, ...)` translates the
+template as today and carries `covariance` through unchanged apart from the
+deep copy, since it knows its own grid.
 
-### 3.1 `_domainia.py`
+### 3.2 Block contract
 
-A private module and the only place that imports domainia, inside functions:
+`Block.sample(conditional_residual, covariance: Covariance | None,
+current_block_state, *, rng)` is unchanged. The covariance a block receives is
+always a plain `Covariance` on the grid of `conditional_residual`.
+`BlockState.covariance` stays `Covariance | None`.
 
-- `require_domainia()` returns the module or raises `ImportError` saying that
-  translating a covariance between domains needs domainia and how to install
-  it from its repository.
-- `to_domain(grid)` maps a `Grid` to `TimeDomain(N, dt)`,
-  `FourierDomain.full(N, dt)` or `WDMDomain.full(wilson.Grid(Nf, Nt, dt))` with
-  the default Meyer window. The time domain's `t0` is left at its default; a
-  `TranslatedCovariance` never compares two time domains, because equal grids
-  never reach the seam.
-- `NativeOperator(covariance)` presents a `Covariance` as a domainia
-  `Operator`: `domain` is `to_domain(covariance.grid)`; the other members
-  delegate.
+### 3.3 Packaging and CI
 
-### 3.2 `TranslatedCovariance`
-
-Public, in `src/enchilada/translation.py`. `@dataclass(frozen=True,
-eq=False)` with fields `native: Covariance` and `grid: Grid`. Construction
-requires both kinds (`TypeError`), `native.grid.same_record(grid)` and
-`grid != native.grid` (`ValueError`), then builds
-`domainia.translate_operator(NativeOperator(native), to_domain(grid))` once and
-keeps it privately.
-
-Members: `channel_names`, `degrees_of_freedom`, `check_compatible(data)` (grid
-equality and channel names, as the native), and `apply`, `solve`, `project`,
-`quadratic_form`, `log_determinant` with the same input rules as section 2.8,
-answered on `grid` through the translated operator. It has no `blocks`,
-`pair` or `in_basis`: a block that needs
-per-point arrays tests `isinstance(covariance, Covariance)` and raises
-otherwise, which is what the `form` guards in `examples/toy_fit.py`,
-`examples/gb_model.py` and `examples/create_block.ipynb` do today.
-
-### 3.3 `NoiseModel`
-
-A `runtime_checkable` `Protocol` in `src/enchilada/block.py` naming the shared
-surface: `grid`, `channel_names`, `degrees_of_freedom`, `check_compatible`,
-`apply`, `solve`, `project`, `quadratic_form`, `log_determinant`.
-`Block.sample(conditional_residual, covariance: NoiseModel | None,
-current_block_state, *, rng)`. `BlockState.covariance` stays
-`Covariance | None`: a block publishes arrays on its own grid, never a
-translated view (`TypeError`).
-
-### 3.4 `transform`
-
-```python
-transform(covariance, target_domain, *, num_frequency_divisions=None, num_time_divisions=None)
-    -> Covariance | TranslatedCovariance
-```
-
-`reference_data` is removed from the covariance overload and raises
-`TypeError` if passed with one. The target `Grid` is built from the native's
-record and `_target_grid(...)` (a WDM target without counts reuses the native's
-WDM grid when it has one, else `resolve_wdm_grid` raises as for data). A target
-equal to the native grid returns `native.copy()`; another grid returns
-`TranslatedCovariance(native, target)`. A `TranslatedCovariance` input is
-re-targeted from its `native`, never nested, as domainia does.
-
-`transform(block_state, ...)` translates the template as today, with
-`reference_data` for the template's source grid, and carries `covariance`
-through unchanged apart from the deep copy, since it knows its own grid.
-
-### 3.5 Packaging and CI
-
-domainia is not declared in `pyproject.toml`: it is private, and a bare
-`domainia` requirement would resolve to the unrelated PyPI package. The README
-documents installing it from its repository into the environment. Tests that
-need it skip with a `requires_domainia` marker mirroring `requires_wdm`. CI
-gains `.github/workflows/domainia.yml` modelled on `wdm.yml`: `workflow_call`,
-a read-only deploy key secret, a pinned revision, `uv pip install --no-deps`
-into the locked environment, and a step that fails if the import is missing so
-the skip cannot hide an install problem. domainia requires `numpy>=2.1` and
-`scipy`, so the core-minimum lane never installs it. The core stays NumPy-only.
+No domainia, no new workflow, no new marker. The `wdm.yml` lane keeps running
+the WDM tests, including the former xfails that need the backend for their
+data transforms; its file list drops `tests/test_covariance_translation.py`,
+which 0.3.0 deleted.
 
 ## 4. Wheel and the block contract
 
 The Wheel holds one native `Covariance`, on whatever grid its owner published
-it. The 0.3.0 rule that it lives on the observation grid cannot survive the
-operator design: a WDM publication has no array form on a time grid.
+it. The 0.3.0 rule that it lives on the observation grid cannot survive without
+translation: a WDM publication has no array form on a time grid.
 
 - `Wheel(observed, initial_covariance=None, *, random_seed=None)`: a native
   `Covariance` (`TypeError` otherwise) whose grid is the same record as the
@@ -367,10 +294,11 @@ operator design: a WDM publication has no array form on a time grid.
   `Grid`, so "the block's grid" is defined for every block, and the comparison
   below stays meaningful after a noise block in another domain has published.
 - `_block_inputs` returns `deepcopy(self._covariance)` when the block's grid
-  equals the covariance's grid, else
-  `transform(self._covariance, domain, num_frequency_divisions=...)`. The seam
-  is reached only when the two grids differ, so every example and benchmark
-  runs without domainia.
+  equals the covariance's grid. When they differ it raises `ValueError` naming
+  the block, both grids and the fix (register the block on the covariance's
+  grid, or have the noise block publish on the block's grid); the ledger, RNG
+  and covariance are unchanged. Every example, benchmark and former xfail runs
+  on equal grids.
 - On return, a published covariance must be on the block's own grid: `_adopt`
   requires `covariance.grid` to equal the block's `Grid` and its channel names
   to equal the observations' (`ValueError` naming both grids), then stores
@@ -386,68 +314,52 @@ operator design: a WDM publication has no array form on a time grid.
   built once in `add`; `_target_grid` returns the `WDMGrid` it does today and
   `add` wraps it.
 
-What a block sees: `covariance.quadratic_form(residual)` and
-`log_determinant()` always; `covariance.A`, `pair` and `in_basis` when it is a
-native `Covariance`.
+What a block sees: a plain `Covariance` on its own grid, read through
+`covariance.A`, `pair`, `blocks` and `in_basis`.
 
 ## 5. Errors
 
 `TypeError` for a wrong kind of argument (a non-array, a non-`Grid`, a
-`TranslatedCovariance` in a `BlockState`);
+`Covariance` passed to `transform`);
 `ValueError` for a wrong value (a shape, a non-finite entry, a complex array on
 a time or WDM grid, a non-Hermitian block, a non-positive variance, a grid or
 channel mismatch, an unknown channel or basis); `AttributeError` for
-an unknown attribute name; `ImportError` from the seam without domainia.
-`NotImplementedError` disappears from the package, and `exclude_also` in the
-coverage configuration drops it.
+an unknown attribute name. `NotImplementedError` disappears from the package,
+and `exclude_also` in the coverage configuration drops it.
 
 ## 6. Testing
 
 - `tests/test_covariance.py` is rewritten around the new layout: construction
   rules one by one, `like`, `pair` and the attribute sugar, `in_basis` against
   the explicit `M C M^T` product and its round trip, the T-below-roundoff
-  error, copy, deepcopy and pickle,
-  `check_compatible`, and the five operator methods against dense
-  real-coordinate matrices on small grids in time, frequency and WDM, including
-  a complex Hermitian cross term in frequency. About 40 tests.
+  error, copy, deepcopy and pickle, and `check_compatible`. About 35 tests.
 - `tests/conftest.py` gains `white_covariance(data, variance)`: `like` with the
   section 2.6 constants for the data's domain (`sigma**2` per time sample,
   `N * dt**2 * sigma**2` per frequency bin, `dt * sigma**2` at active WDM
   pixels and zero elsewhere). It replaces the `from_variance` and `from_psd`
   calls in tests and the `FlatPSD`, `UnitPSD` and `White` test doubles.
-- The weights of section 2.8 are pinned natively, with no domainia: the same
-  white noise built with `white_covariance` on time data and on its spectrum
-  gives equal `quadratic_form` on `x` and on `dt * rfft(x)`, and
-  `log_determinant` values that differ by exactly
-  `2 * K * N * (log dt + 0.5 * log N)`, domainia's coordinate Jacobian. The
-  WDM covariance on a zero-valued WDM `L1Data` pins the WDM leg of
-  `log_determinant`, `K * N * log dt` above the time value, without the WDM
-  backend.
 - `tests/test_grid.py` covers `Grid` validation and members and `L1Data.grid`.
-- `tests/test_translated_covariance.py` skips without domainia and pins: same
-  grid returns a copy; another grid returns a `TranslatedCovariance`;
-  `quadratic_form` and `log_determinant` of a translated white covariance agree
-  with the native across time, frequency and WDM; `solve` round-trips through
-  `apply`; re-targeting never nests; a `TranslatedCovariance` is refused by
-  `BlockState`. In `tests/test_translation.py`, which runs everywhere, the
-  seam raises `ImportError` when domainia is absent, tested by hiding the
-  module.
-- The seven strict xfails become passing tests. Six pass without domainia under
-  section 4: the toy time blocks on frequency and WDM observations (the noise
-  block publishes on the time grid they sample on), the GB probe seeded with
-  its native frequency covariance on time and WDM observations, the noise-only
-  frequency seed, and the block-state round trip, which now builds its WDM
-  covariance with `like` on the WDM reference rather than through `transform`,
-  since `transform` across grids returns a `TranslatedCovariance` that
-  `BlockState` refuses. The WDM publication test
-  adds a time-domain block that calls `quadratic_form` and skips without
-  domainia.
+- `tests/test_translation.py`: a `Covariance` passed to `transform` raises
+  `TypeError`; a `BlockState` with a covariance translates its template and
+  carries the covariance unchanged and unaliased; the former seam tests that
+  expected `NotImplementedError` go.
+- `tests/test_wheel_translation.py`: a block registered on another grid than
+  the Wheel's covariance is refused at `run` with `ValueError` naming both
+  grids, with the ledger, RNG and covariance unchanged; a seed covariance or a
+  returned covariance on another grid than the block's is refused at `add` and
+  at `run` the same way. These replace the three seam tests there.
+- The seven strict xfails become passing tests, all under section 4 and none
+  needing domainia: the toy time blocks on frequency and WDM observations (the
+  noise block publishes on the time grid they sample on), the GB probe seeded
+  with its native frequency covariance on time and WDM observations, the
+  noise-only frequency seed, the block-state round trip, which now builds its
+  WDM covariance with `like` on the WDM reference since `transform` no longer
+  takes a covariance, and the WDM publication, whose only block reads the
+  covariance on the WDM grid it published on. The WDM cases keep `requires_wdm`
+  for the data transforms.
 - The isolation test in `tests/test_state.py` keeps passing: every handoff is a
-  `copy()`.
-- Coverage: the gate stays at its current threshold. `_domainia.py` and the
-  `TranslatedCovariance` method bodies are excluded with `# pragma: no cover`
-  because the per-PR lanes have no domainia; the domainia lane runs them as
-  tests.
+  `copy()` or a `deepcopy`.
+- Coverage: the gate stays at its current threshold.
 
 ## 7. Migration
 
@@ -461,10 +373,13 @@ All mechanical:
   `examples/gb_model.py` feeds a narrowband likelihood written in PSD units,
   so it converts the bin variances back with `2 * C / Tobs` from
   `conditional_residual.Tobs` rather than rewriting the likelihood.
-- `transform(cov, ..., reference_data=...)` drops the keyword (14 files).
+- `transform(cov, ...)` calls (14 files) go: a same-grid call becomes
+  `copy()` or is dropped where the Wheel now hands the covariance over
+  directly, and a cross-grid call is rewritten as section 6 says. The
+  `assert_type` line for it in `tests/test_typing.py` becomes one for `copy()`.
 - `covariance.form != "diagonal"` guards in `examples/toy_fit.py`,
-  `examples/gb_model.py` and `examples/create_block.ipynb` become
-  `not isinstance(covariance, Covariance)`.
+  `examples/gb_model.py` and `examples/create_block.ipynb` are deleted: there
+  is one form. The cross-term checks those blocks make stay.
 - `from_variance` (about 60 sites, nearly all tests) and `from_psd` (about 22)
   become `like` calls: tests through `white_covariance`;
   `examples/toy_fit.py`, `benchmarks/benchmark_wheel.py`,
@@ -475,26 +390,32 @@ All mechanical:
   `(Tobs / 2) * noise.psd(freqs)` per channel to `like`, with the model
   floored at low frequency as today. The test PSD doubles are deleted.
 - `Covariance.like` call sites are unchanged.
-- README: the attribute API, the shape rule (one form), the operator methods,
-  the seam, the domainia install note, and the section 2.6 units beside the
-  Fourier convention in place of the `from_psd` passage and the
-  `psd(frequencies[, channel])` protocol; the Known limitations bullet "No
-  covariance translation yet" is replaced by the domainia requirement.
-- CHANGELOG 0.4.0: Added `Grid`, `L1Data.grid`, `TranslatedCovariance`,
-  `NoiseModel`, the operator methods; Changed the storage layout, `like`'s
-  grid capture, the Wheel's storage rule, `Block.sample`'s parameter type;
-  Removed the full form, `form`, the derived-basis cache, `from_psd`,
-  `from_variance`, `noise_psd`, `noise_variance`, `reference_data` for
-  covariances, `NotImplementedError` from the seam.
+- README: the attribute API, the shape rule (one form), `Grid`, and the
+  section 2.6 units beside the Fourier convention in place of the `from_psd`
+  passage and the `psd(frequencies[, channel])` protocol; the translation
+  section says a covariance does not translate and that a block reads it on
+  its own grid; the Known limitations bullet "No covariance translation yet"
+  becomes "No covariance delivery across grids yet": a campaign that carries a
+  covariance keeps the noise owner and every block that reads it on one grid,
+  until the components layer that follows domainia 3.0.
+- CHANGELOG 0.4.0: Added `Grid`, `L1Data.grid`; Changed the storage layout,
+  `like`'s grid capture, the Wheel's storage rule and its refusal of a block on
+  another grid; Removed the full form, `form`, the derived-basis cache,
+  `from_psd`, `from_variance`, `noise_psd`, `noise_variance`, the covariance
+  overload of `transform` with its `reference_data`, `NotImplementedError`
+  from the seam.
 - `pyproject.toml` version 0.4.0.
 - `docs/wheel.svg` is the user's and is left alone.
 
 ## 8. Non-goals
 
+- Delivering a covariance to a block on another grid, noise components with
+  several owners, and domainia 3.0's `transform`, `frequency_covariance` and
+  `wdm_covariance`: the components spec that follows domainia 3.0.
 - Moving the data transforms (`_transforms.py`, the `wdm` backend) to domainia.
 - Band-limited or partial-grid covariances.
 - A WDM window parameter on `WDMGrid`.
 - Non-stationary or evolutionary noise models.
-- Caching Cholesky factors between validation and `log_determinant`.
+- Likelihood methods on `Covariance`.
 
 Each is a separate spec.
