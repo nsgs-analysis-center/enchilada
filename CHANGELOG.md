@@ -17,11 +17,21 @@ All notable changes to enchilada are documented here. The format follows
 
 - `Covariance` stores one stacked `(K, K, *channel_shape)` Hermitian array,
   `blocks`, and carries its `grid`. `Covariance.like(data, pairs)` is the one
-  constructor and captures the data's grid and channel order; `pair`, the
+  classmethod and captures the data's grid and channel order; `pair`, the
   channel attributes and `in_basis` read it. Construction validates exact
   Hermitian symmetry, realness per domain, positive variances, zero blocks at
   inactive WDM pixels and positive definiteness with one batched Cholesky.
   `copy()` revalidates; `deepcopy` and pickle restore without validating.
+- **Breaking:** the direct constructor is
+  `Covariance(blocks, *, channel_names, grid)`; the `pairs` attribute and
+  `form` are gone.
+- **Breaking:** the keyword `reference_data` is renamed `data` on `like` and
+  `check_compatible`.
+- **Breaking:** `check_compatible` checks only channel order and grid equality;
+  its shape, real/complex kind and positivity checks moved into the
+  constructor.
+- `Wheel(initial_covariance=...)` accepts a covariance on any grid of the same
+  record (same sample count and sample rate), not only the observation grid.
 - Wheel holds one covariance on the grid its owner published it on and hands a
   deep copy to blocks registered on that grid. A block on another grid is
   refused at `run` with `ValueError` naming both grids; a seed or returned
@@ -33,10 +43,19 @@ All notable changes to enchilada are documented here. The format follows
 
 ### Removed
 
-- The full form, `form`, the derived-basis cache and the pickle hooks.
+- The full form, `form`, the derived-basis cache and
+  `__getstate__`/`__setstate__` (replaced by `__reduce__`).
 - `Covariance.from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the
   `psd(frequencies[, channel])` model protocol: a noise block computes its
   variances on the grid of the data it received and passes them to `like`.
+  Migration:
+  - `from_variance(data, sigma**2)` → `like` with `sigma**2` per time sample,
+    `N * dt**2 * sigma**2` per frequency bin or `dt * sigma**2` per active WDM
+    pixel.
+  - `from_psd(data, model)` → `like` with `data.Tobs / 2 * model.psd(f)` per
+    channel at `f = np.fft.rfftfreq(data.N, data.dt)`.
+  - `noise_psd(ch, data)` → `2 * noise.pair(ch, ch) / data.Tobs`.
+  - `noise_variance(ch, data)` → `noise.pair(ch, ch)` on time data.
 - The covariance overload of `transform` with its `reference_data`, the
   covariance translation seam and every `NotImplementedError` in the package.
 

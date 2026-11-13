@@ -81,6 +81,8 @@ jobs:
             tests/test_toy_translation.py \
             tests/test_translation_review.py \
             tests/test_translation_example.py \
+            tests/test_initial_block_state.py \
+            tests/test_gb_example_contract.py \
             --junitxml="$RUNNER_TEMP/wdm-integration.xml"
           uv run --no-sync python - "$RUNNER_TEMP/wdm-integration.xml" <<'PY'
           import sys

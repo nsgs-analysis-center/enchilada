@@ -274,7 +274,7 @@ wheel = Wheel(
 ```
 
 With `initial_covariance=None`, Wheel starts without a covariance; a block can
-publish one. `Covariance.like(data, pairs)` is the one constructor: it takes the
+publish one. `Covariance.like(data, pairs)` is the one classmethod: it takes the
 `L1Data` whose grid and channel order the covariance adopts and a mapping from
 channel names (`"A"`), concatenated pairs (`"AE"`) or `(first, second)` tuples
 to arrays of the data's channel shape. Every channel's own entry is required; an
@@ -289,7 +289,8 @@ that is a noise block's business. The one convention a block needs follows from
 `Tobs = N / fs`. White noise of variance `sigma**2` per sample therefore has
 `C_k = N * dt**2 * sigma**2` at every bin and `dt * sigma**2` at every active
 WDM pixel (zero at the structurally inactive edge pixels). A block that
-evaluates a PSD model builds its covariance with
+evaluates a PSD model at `f = np.fft.rfftfreq(spectrum.N, spectrum.dt)` builds
+its covariance with
 `Covariance.like(spectrum, {ch: spectrum.Tobs / 2 * model.psd(f) for ch in spectrum.channel_names})`
 and reads a channel's bin variances back with `noise.pair("A", "A")`.
 
@@ -341,6 +342,8 @@ sample rate and WDM grid), the same value as `observed.grid`.
 `observed.grid == noise.grid`. Wheel validates the initial covariance and every
 covariance a block publishes, and keeps it on the grid it was published on; see
 [Time, frequency, and WDM translation](#time-frequency-and-wdm-translation).
+The initial covariance handed to `Wheel` may be on any grid of the same record
+(same sample count and sample rate), not necessarily `observed.grid`.
 
 Wheel uses descriptive arguments at each entry point:
 
@@ -477,8 +480,8 @@ unchanged. Wheel keeps the current covariance on the grid its owner published
 it on and hands it to blocks registered on that grid; a block registered on
 another grid is refused at `run` with `ValueError` naming both grids, and a
 seed or returned covariance on another grid than its block's is refused at
-`add` or `run`. In a campaign that carries covariance, register the noise owner
-and every block that reads the covariance on one grid.
+`add` or `run`. In a campaign that carries covariance, register every block on
+one grid.
 
 The [translation notebook](examples/domain_translation.ipynb) walks through the
 same API with plots, round-trip checks, and blocks using different domains.
@@ -560,8 +563,8 @@ producing quietly wrong science:
 - `Wheel` checks `name` and `sample` before registration, then validates
   every supplied initial or returned signal's channels, lengths, real/complex
   kind, and finiteness.
-  Covariance publications are checked with `check_compatible` against the
-  observation grid before any state is committed.
+  Covariance publications are checked for channel order and for the block's
+  registered grid before any state is committed.
 - `NumericOrbit.positions` refuses to extrapolate outside its tabulated
   ephemeris instead of returning cubic-polynomial garbage.
 
@@ -653,10 +656,10 @@ oversights:
   covariance publication to preserve the model; the owner must return its full
   covariance. Ownership changes remain warnings because they may be deliberate.
 - **No covariance delivery across grids yet.** A `Covariance` lives on one
-  grid and is not translated, so a campaign that carries covariance keeps the
-  noise owner and every block that reads it on one grid; a block on another
-  grid is refused at `run`. Delivering a noise model to blocks on several grids
-  is the noise-components layer that follows domainia 3.0.
+  grid and is not translated, so a campaign that carries covariance keeps every
+  block on one grid; a block on another grid is refused at `run`. Delivering a
+  noise model to blocks on several grids is the noise-components layer that
+  follows domainia 3.0.
 - **No checkpoint file format or lifecycle end.** A restart requires the blocks'
   sampler states, Wheel's accepted physical estimates, and the relevant RNG states
   to be saved and restored consistently. Serialization, restoration, and resource
