@@ -47,17 +47,6 @@ def transform(
 
 @overload
 def transform(
-    value: Covariance,
-    target_domain: str,
-    *,
-    num_frequency_divisions: int | None = None,
-    num_time_divisions: int | None = None,
-    reference_data: L1Data | None = None,
-) -> Covariance: ...
-
-
-@overload
-def transform(
     value: BlockState,
     target_domain: str,
     *,
@@ -68,35 +57,34 @@ def transform(
 
 
 def transform(
-    value: L1Data | Covariance | BlockState,
+    value: L1Data | BlockState,
     target_domain: str,
     *,
     num_frequency_divisions: int | None = None,
     num_time_divisions: int | None = None,
     reference_data: L1Data | None = None,
-) -> L1Data | Covariance | BlockState:
-    """Return an independent representation of data, covariance or a block state.
+) -> L1Data | BlockState:
+    """Return an independent representation of data or of a block state.
 
     Args:
-        value: Object to translate. A BlockState with a signal or covariance
-            needs reference_data because its grid is intentionally external.
+        value: Object to translate. A BlockState with a template needs
+            reference_data because its grid is intentionally external; its
+            covariance carries its own grid and is deep-copied unchanged.
         target_domain: "time", "frequency", or "wdm".
         num_frequency_divisions: WDM frequency divisions (Nf, yielding Nf+1 rows).
             Specify this or num_time_divisions on first conversion into WDM.
         num_time_divisions: WDM time divisions. The other count is derived from
             num_time_samples; both counts must be positive even integers. Both
             may be supplied if consistent. WDM-to-WDM defaults to its current grid.
-        reference_data: Required for a Covariance, as the L1Data on its current
-            grid, and for a BlockState with a signal or covariance, as their
-            source grid.
+        reference_data: Required for a BlockState with a template, as the
+            L1Data on the template's source grid.
 
-    Preserves observation metadata, orbit, and published physical parameters.
-    Signal arrays follow dt*rfft and the WDM backend's normalized-edge convention.
-    Covariance translation between domains is a seam that raises
-    `NotImplementedError` until the translation layer is installed (design spec
-    section 6).
+    Preserves observation metadata, orbit, published physical parameters and a
+    block state's covariance. Signal arrays follow dt*rfft and the WDM backend's
+    normalized-edge convention. A Covariance does not translate between domains:
+    passing one raises TypeError; ``Covariance.copy`` makes an independent copy.
     WDM coefficient transforms require the separately installed local backend
-    and Python >=3.13. Same-grid copies and covariance construction do not.
+    and Python >=3.13. Same-grid copies do not.
     """
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")
@@ -128,35 +116,8 @@ def transform(
             target_wdm_grid=grid,
         )
         return replace(source, channel_data=converted, data_domain=target_domain)
-    if isinstance(value, Covariance):
-        # The seam for the covariance translation layer (design spec section 6).
-        if reference_data is None:
-            raise ValueError(
-                "transform needs reference_data for a Covariance: the L1Data on "
-                "its current grid"
-            )
-        # Unbound call: copy without trusting a subclass's overridden methods,
-        # then validate the plain Covariance that results.
-        copied = Covariance.copy(value)
-        copied.check_compatible(reference_data)
-        grid = _target_grid(
-            target_domain,
-            reference_data.num_time_samples,
-            reference_data.wdm_grid,
-            num_frequency_divisions,
-            num_time_divisions,
-        )
-        # A time or frequency target and reference both have grid None.
-        if (
-            target_domain == reference_data.data_domain
-            and grid == reference_data.wdm_grid
-        ):
-            return copied
-        raise NotImplementedError(
-            "covariance translation between domains is not implemented; see "
-            "docs/superpowers/specs/2026-11-10-covariance-object-design.md section 6"
-        )
     if isinstance(value, BlockState):
+        # deepcopy restores the covariance read-only and unaliased on its own grid.
         source_state = deepcopy(value)
         source_state.__post_init__()
         signal = source_state.template
@@ -192,18 +153,10 @@ def transform(
                 source_wdm_grid=source_reference.wdm_grid,
                 target_wdm_grid=grid,
             )
-        covariance = source_state.covariance
-        if covariance is not None:
-            if reference_data is None:
-                raise ValueError(
-                    "a BlockState covariance requires its source reference_data"
-                )
-            covariance = transform(
-                covariance,
-                target_domain,
-                num_frequency_divisions=num_frequency_divisions,
-                num_time_divisions=num_time_divisions,
-                reference_data=reference_data,
-            )
-        return replace(source_state, template=signal, covariance=covariance)
-    raise TypeError("transform expects L1Data, Covariance, or BlockState")
+        return replace(source_state, template=signal)
+    if isinstance(value, Covariance):
+        raise TypeError(
+            "transform does not take a Covariance: it carries its grid and does "
+            "not translate between domains; use copy() for an independent copy"
+        )
+    raise TypeError("transform expects L1Data or BlockState")

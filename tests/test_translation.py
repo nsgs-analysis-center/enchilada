@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import BlockState, Covariance, L1Data, WDMGrid
+from enchilada import BlockState, L1Data, WDMGrid
 from enchilada.translation import transform
 
 requires_wdm = pytest.mark.skipif(
@@ -77,9 +77,6 @@ def test_same_domain_transform_is_an_independent_snapshot():
     copied = transform(data, "time")
     copied.channel_data["A"][:] = 0
     assert np.any(data.channel_data["A"])
-    covariance = white_covariance(data, 2.0)
-    copied_covariance = transform(covariance, "time", reference_data=data)
-    assert not np.shares_memory(copied_covariance.A, covariance.A)
 
 
 def test_result_conversion_preserves_state_without_aliasing():
@@ -98,21 +95,48 @@ def test_result_conversion_preserves_state_without_aliasing():
     assert original.parameters["amplitude"][0] == 2
 
 
-def test_noise_only_state_needs_reference_data_and_parameters_only_does_not():
+def test_noise_only_state_translation_carries_its_covariance_without_a_reference():
     data = observations()
-    result = BlockState(covariance=white_covariance(data, 1.0))
-    with pytest.raises(
-        ValueError, match="covariance requires its source reference_data"
-    ):
-        transform(result, "frequency")
-    with pytest.raises(NotImplementedError, match="section 6"):
-        transform(result, "frequency", reference_data=data)
-    same = transform(result, "time", reference_data=data)
-    np.testing.assert_array_equal(same.covariance.A, 1.0)
+    covariance = white_covariance(data, 1.0)
+    result = BlockState(covariance=covariance, parameters={"variance": 1.0})
+    converted = transform(result, "frequency")
+    assert converted.template is None
+    assert converted.parameters == {"variance": 1.0}
+    assert converted.covariance is not covariance
+    assert converted.covariance.grid == data.grid  # a covariance keeps its grid
+    np.testing.assert_array_equal(converted.covariance.A, 1.0)
+    assert not np.shares_memory(converted.covariance.blocks, covariance.blocks)
+    assert not converted.covariance.blocks.flags.writeable
     state = BlockState(parameters={"amplitude": 1.0})
     copied = transform(state, "frequency")
     assert copied is not state
     assert copied.parameters == state.parameters
+
+
+def test_block_state_with_template_and_covariance_translates_only_the_template():
+    data = observations()
+    covariance = white_covariance(data, 2.0)
+    original = data.block_state(data.channel_data, covariance=covariance)
+    converted = transform(original, "frequency", reference_data=data)
+    spectrum = transform(data, "frequency")
+    for name in data.channel_names:
+        np.testing.assert_allclose(
+            converted.template[name], spectrum.channel_data[name]
+        )
+    assert converted.covariance.grid == covariance.grid
+    np.testing.assert_array_equal(converted.covariance.blocks, covariance.blocks)
+    assert not np.shares_memory(converted.covariance.blocks, covariance.blocks)
+
+
+def test_transform_rejects_a_covariance():
+    data = observations()
+    covariance = white_covariance(data, 2.0)
+    with pytest.raises(TypeError, match="does not take a Covariance.*copy"):
+        transform(covariance, "time")
+    with pytest.raises(TypeError, match="does not take a Covariance"):
+        transform(covariance, "frequency", reference_data=data)
+    with pytest.raises(TypeError, match="expects L1Data or BlockState"):
+        transform({"A": np.zeros(4)}, "time")
 
 
 def test_conversion_rejects_missing_or_mismatched_reference():
@@ -122,12 +146,6 @@ def test_conversion_rejects_missing_or_mismatched_reference():
         transform(result, "frequency")
     with pytest.raises(ValueError, match="length|shape"):
         transform(result, "frequency", reference_data=observations(32))
-    with pytest.raises(ValueError, match="grid"):
-        transform(
-            white_covariance(data, 1.0),
-            "time",
-            reference_data=observations(32),
-        )
 
 
 @pytest.mark.parametrize("target", ["", "wavelet", "Frequency"])
@@ -266,93 +284,6 @@ def test_unrelated_wdm_package_and_unsupported_python_have_clear_errors(monkeypa
     monkeypatch.setattr(backend.sys, "version_info", (3, 12))
     with pytest.raises(ImportError, match="Python >=3.13"):
         transform(observations(), "wdm", num_time_divisions=8)
-
-
-def test_covariance_same_domain_transform_is_an_independent_copy():
-    data = observations()
-    cov = white_covariance(data, 2.0)
-    copied = transform(cov, "time", reference_data=data)
-    assert isinstance(copied, Covariance)
-    assert copied is not cov
-    np.testing.assert_array_equal(copied.A, cov.A)
-    assert not np.shares_memory(copied.A, cov.A)
-
-
-def test_covariance_cross_domain_transform_is_the_seam():
-    data = observations()
-    cov = white_covariance(data, 2.0)
-    with pytest.raises(NotImplementedError, match="section 6"):
-        transform(cov, "frequency", reference_data=data)
-    with pytest.raises(ValueError, match="reference_data"):
-        transform(cov, "time")
-    with pytest.raises(ValueError, match="grid"):
-        transform(cov, "time", reference_data=observations(32))
-    # Validation precedes the domain decision, so a cross-domain target with an
-    # incompatible reference is still a ValueError.
-    with pytest.raises(ValueError, match="grid"):
-        transform(cov, "frequency", reference_data=observations(32))
-    # The target grid is resolved first, so a bad count fails as ValueError.
-    with pytest.raises(ValueError, match="positive even integer"):
-        transform(cov, "wdm", num_frequency_divisions=7, reference_data=data)
-
-
-def test_covariance_seam_copies_through_covariance_methods():
-    class UncheckedCovariance(Covariance):
-        def copy(self):
-            return self
-
-        def check_compatible(self, reference_data):
-            pass
-
-    def unchecked(cov):
-        return UncheckedCovariance(
-            cov.blocks, channel_names=cov.channel_names, grid=cov.grid
-        )
-
-    data = observations()
-    same = transform(
-        unchecked(white_covariance(data, 2.0)), "time", reference_data=data
-    )
-    assert type(same) is Covariance
-    short = unchecked(white_covariance(observations(32), 2.0))
-    with pytest.raises(ValueError, match="grid"):
-        transform(short, "time", reference_data=data)
-
-
-def test_covariance_wdm_same_grid_copies_and_regrid_is_the_seam_without_backend():
-    grid = WDMGrid(num_frequency_divisions=8, num_time_divisions=8)
-    active = np.where(grid.active_mask, 1.0, 0.0)
-    wdm = L1Data(
-        channel_data={name: active.copy() for name in ("A", "E")},
-        channel_names=("A", "E"),
-        sample_rate_hz=4.0,
-        tdi_generation="2.0",
-        physical_observable="fractional_frequency",
-        data_domain="wdm",
-    )
-    assert wdm.wdm_grid == grid
-    cov = Covariance.like(wdm, {name: active for name in ("A", "E")})
-    for counts in ({}, {"num_frequency_divisions": 8}, {"num_time_divisions": 8}):
-        same = transform(cov, "wdm", reference_data=wdm, **counts)
-        np.testing.assert_array_equal(same.A, cov.A)
-        assert not np.shares_memory(same.A, cov.A)
-    with pytest.raises(NotImplementedError, match="section 6"):
-        transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)
-    with pytest.raises(NotImplementedError, match="section 6"):
-        transform(cov, "time", reference_data=wdm)
-
-
-@requires_wdm
-def test_covariance_wdm_regrid_is_the_seam_but_same_grid_copies():
-    data = observations()
-    wdm = transform(data, "wdm", num_frequency_divisions=8)
-    variances = np.where(wdm.wdm_grid.active_mask, 1.0, 0.0)
-    cov = Covariance.like(wdm, {name: variances for name in wdm.channel_names})
-    same = transform(cov, "wdm", num_frequency_divisions=8, reference_data=wdm)
-    np.testing.assert_array_equal(same.A, cov.A)
-    assert not np.shares_memory(same.A, cov.A)
-    with pytest.raises(NotImplementedError):
-        transform(cov, "wdm", num_frequency_divisions=4, reference_data=wdm)
 
 
 @requires_wdm

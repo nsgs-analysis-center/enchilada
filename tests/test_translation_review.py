@@ -1,37 +1,37 @@
 """Regression cases found while independently reviewing object translation."""
 
 import importlib.util
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import BlockState, Covariance, Wheel
+from enchilada import BlockState, Covariance, WDMGrid, Wheel
 from enchilada.translation import transform
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("wdm") is None, reason="local WDM backend is optional"
-)
-@pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=True,
-    reason="covariance translation seam, design spec section 6",
-)
-def test_noise_only_wdm_result_can_reuse_grid_with_compatible_time_reference(observed):
-    covariance = transform(
-        white_covariance(observed, 1.0),
-        "wdm",
-        num_frequency_divisions=4,
-        reference_data=observed,
+def test_noise_only_wdm_state_translation_carries_its_covariance(observed):
+    grid = WDMGrid(num_frequency_divisions=4, num_time_divisions=16)
+    wdm_reference = replace(
+        observed,
+        channel_data={
+            name: np.zeros(grid.array_shape) for name in observed.channel_names
+        },
+        data_domain="wdm",
+    )
+    variances = np.where(grid.active_mask, 1.0, 0.0)
+    covariance = Covariance.like(
+        wdm_reference, {name: variances for name in observed.channel_names}
     )
     original = BlockState(covariance=covariance, parameters={"variance": 1.0})
-    wdm_reference = transform(observed, "wdm", num_frequency_divisions=4)
     converted = transform(original, "wdm", reference_data=wdm_reference)
     assert converted.parameters == original.parameters
     assert converted.template is None
     assert converted.covariance is not covariance
+    assert converted.covariance.grid == wdm_reference.grid
     np.testing.assert_array_equal(converted.covariance.A, covariance.A)
+    assert not np.shares_memory(converted.covariance.blocks, covariance.blocks)
 
 
 def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(observed):
@@ -57,11 +57,11 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
     np.testing.assert_array_equal(wheel.covariance.A, 2.0)
 
 
-def test_same_grid_block_receives_the_covariance_without_the_seam(
+def test_same_grid_block_receives_the_covariance_without_transform(
     observed, monkeypatch
 ):
-    """An explicit domain equal to the observations' skips transform() for the
-    covariance: the Wheel already validated it on that grid."""
+    """An explicit domain equal to the observations' hands the covariance over
+    as a deep copy; nothing goes through transform()."""
     import enchilada.wheel
 
     delegate = enchilada.wheel.transform

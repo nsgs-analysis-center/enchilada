@@ -210,8 +210,7 @@ def test_invalid_seed_leaves_registration_and_rng_unchanged(
         )
     else:
         invalid = replace(invalid, parameters={"amplitude": CannotCopy()})
-    # Each kind has its own error, so the seam's NotImplementedError (a
-    # RuntimeError) cannot pass for an invalid seed being rejected.
+    # Each kind has its own error, so one failure cannot pass for another.
     expected, message = {
         "type": (TypeError, "initial_block_state must be a BlockState"),
         "shape": (ValueError, "length 3, expected"),
@@ -260,20 +259,7 @@ def test_failed_seed_translation_does_not_register_block(observed, monkeypatch):
     wheel.run(1)
 
 
-@pytest.mark.parametrize(
-    "with_noise",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                raises=NotImplementedError,
-                strict=True,
-                reason="covariance translation seam, design spec section 6",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("with_noise", [False, True])
 def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise):
     class RetainResult(SeededBlock):
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -309,6 +295,7 @@ def test_seed_without_signal_can_sample_in_selected_domain(observed, with_noise)
     np.testing.assert_array_equal(wheel.residual().channel_data["A"], 5)
     if with_noise:
         np.testing.assert_allclose(wheel.covariance.A, 100.0)
+        assert wheel.covariance.grid == spectrum.grid
 
 
 def test_seed_translation_does_not_transform_unrelated_observations(observed):

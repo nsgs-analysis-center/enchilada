@@ -19,12 +19,6 @@ def toy():
 
 
 @pytest.mark.parametrize("canonical_domain", ["frequency", "wdm"])
-@pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=True,
-    reason="covariance translation seam, design spec section 6; "
-    "assumes the layer returns the diagonal form",
-)
 def test_toy_time_blocks_preserve_draws_on_translated_observations(
     toy, canonical_domain
 ):

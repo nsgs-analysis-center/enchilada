@@ -127,13 +127,7 @@ def test_gb_context_requires_independent_channels_and_returns_psd_units(gb_model
 
 
 @pytest.mark.parametrize("storage_domain", ["time", "wdm"])
-@pytest.mark.xfail(
-    raises=NotImplementedError,
-    strict=True,
-    reason="covariance translation seam, design spec section 6; "
-    "assumes the layer returns the diagonal form",
-)
-def test_gb_frequency_registration_restores_a_diagonal_form_frequency_covariance(
+def test_gb_frequency_registration_reads_its_native_frequency_covariance(
     gb_model, spectral_context, storage_domain
 ):
     if storage_domain == "wdm":
@@ -143,9 +137,7 @@ def test_gb_frequency_registration_restores_a_diagonal_form_frequency_covariance
     observed = transform(data, storage_domain, **options)
     wheel = Wheel(
         observed,
-        initial_covariance=transform(
-            noise, storage_domain, reference_data=data, **options
-        ),
+        initial_covariance=noise,
         random_seed=0,
     )
     block = make_block(gb_model)
@@ -162,6 +154,7 @@ def test_gb_frequency_registration_restores_a_diagonal_form_frequency_covariance
 
     wheel.add(ContextProbe(), initial_block_state=initial, data_domain="frequency")
     wheel.run(1)
+    assert wheel.covariance.grid == data.grid
     result = wheel.ledger["gb"]
     assert result.template["A"].shape == observed.channel_data["A"].shape
     frequency_result = transform(result, "frequency", reference_data=observed)
