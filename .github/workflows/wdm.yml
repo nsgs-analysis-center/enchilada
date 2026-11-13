@@ -77,7 +77,6 @@ jobs:
         run: |
           uv run --no-sync pytest -q \
             tests/test_translation.py \
-            tests/test_covariance_translation.py \
             tests/test_wheel_translation.py \
             tests/test_toy_translation.py \
             tests/test_translation_review.py \

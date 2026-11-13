@@ -67,9 +67,10 @@ def _restore(
 ) -> "Covariance":
     """Rebuild a Covariance from its fields without validating (deepcopy, pickle).
 
-    Both callers hand over a fresh, writeable array copy; only the write flag
-    has to be restored. Only objects that already passed the constructor reach
-    this path, so the batched Cholesky is not repeated.
+    Callers may pass the original array (``copy.copy``), a fresh copy
+    (``deepcopy``) or a read-only buffer (pickle protocol 5); the array is
+    marked read-only in every case. Only objects that already passed the
+    constructor reach this path, so the batched Cholesky is not repeated.
     """
     restored = object.__new__(Covariance)
     blocks.setflags(write=False)
@@ -391,7 +392,8 @@ class Covariance:
     def __reduce__(
         self,
     ) -> tuple[Callable[..., "Covariance"], tuple[np.ndarray, tuple[str, ...], Grid]]:
-        # deepcopy and pickle both copy the array and restore without validating.
+        # deepcopy and pickle restore without validating; a subclass instance
+        # comes back as a plain Covariance, like copy().
         return _restore, (self.blocks, self.channel_names, self.grid)
 
 

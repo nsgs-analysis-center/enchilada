@@ -4,6 +4,42 @@ All notable changes to enchilada are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/) once tagged.
 
+## [0.4.0] — Unreleased
+
+### Added
+
+- `Grid`: a frozen value (`data_domain`, `num_time_samples`, `sample_rate_hz`,
+  `wdm_grid`) with `channel_shape`, `active_mask`, `observation_duration_s` and
+  `same_record`; `L1Data.grid` returns the data's grid and `enchilada.domains`
+  owns `DOMAINS`.
+
+### Changed
+
+- `Covariance` stores one stacked `(K, K, *channel_shape)` Hermitian array,
+  `blocks`, and carries its `grid`. `Covariance.like(data, pairs)` is the one
+  constructor and captures the data's grid and channel order; `pair`, the
+  channel attributes and `in_basis` read it. Construction validates exact
+  Hermitian symmetry, realness per domain, positive variances, zero blocks at
+  inactive WDM pixels and positive definiteness with one batched Cholesky.
+  `copy()` revalidates; `deepcopy` and pickle restore without validating.
+- Wheel holds one covariance on the grid its owner published it on and hands a
+  deep copy to blocks registered on that grid. A block on another grid is
+  refused at `run` with `ValueError` naming both grids; a seed or returned
+  covariance on another grid than its block's is refused at `add` or `run`.
+- `transform` takes `L1Data` or `BlockState` only; a `BlockState` carries its
+  covariance through unchanged.
+- The examples and notebooks build covariances with `like` from the convention
+  `C = (Tobs / 2) S(f)` under `X = dt * rfft(x)` and read them with `pair`.
+
+### Removed
+
+- The full form, `form`, the derived-basis cache and the pickle hooks.
+- `Covariance.from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the
+  `psd(frequencies[, channel])` model protocol: a noise block computes its
+  variances on the grid of the data it received and passes them to `like`.
+- The covariance overload of `transform` with its `reference_data`, the
+  covariance translation seam and every `NotImplementedError` in the package.
+
 ## [0.3.0] — Unreleased
 
 ### Added

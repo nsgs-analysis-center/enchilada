@@ -34,8 +34,8 @@ class DomainEcho:
     def _check_input(self, conditional_residual, covariance):
         if conditional_residual.data_domain != self.expected_domain:
             raise ValueError(f"{self.name}: unexpected data representation")
-        # Covariance translation across domains arrives with the translation
-        # layer (design spec section 6); this walkthrough runs without one.
+        # This walkthrough carries no covariance: it shows data and block-state
+        # translation only.
         if covariance is not None:
             raise ValueError(f"{self.name}: expected no covariance in this walkthrough")
 
