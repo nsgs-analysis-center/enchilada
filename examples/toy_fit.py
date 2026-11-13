@@ -20,8 +20,9 @@ from enchilada import BlockState, Covariance, L1Data, Wheel
 class SineBlock:
     """A known-frequency sinusoid with amplitude prior N(0, prior_std**2).
 
-    The conditional combines this proper Gaussian prior with the white-noise
-    likelihood. Its waveform basis is derived from the supplied grid each call.
+    The conditional combines this proper Gaussian prior with the likelihood under
+    a per-sample noise variance on the data grid. Its waveform basis is derived
+    from the supplied grid each call.
     """
 
     def __init__(self, name: str, freq: float, prior_std: float = 10.0):

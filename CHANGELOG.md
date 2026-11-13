@@ -40,11 +40,13 @@ All notable changes to enchilada are documented here. The format follows
   covariance through unchanged.
 - The examples and notebooks build covariances with `like` from the convention
   `C = (Tobs / 2) S(f)` under `X = dt * rfft(x)` and read them with `pair`.
+- `L1Data` now rejects a bool or non-real `sample_rate_hz` with `TypeError` at
+  construction, matching `Grid`.
 
 ### Removed
 
-- The full form, `form`, the derived-basis cache and
-  `__getstate__`/`__setstate__` (replaced by `__reduce__`).
+- The full form, `form`, the module constant `FORMS`, the derived-basis cache
+  and `__getstate__`/`__setstate__` (replaced by `__reduce__`).
 - `Covariance.from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the
   `psd(frequencies[, channel])` model protocol: a noise block computes its
   variances on the grid of the data it received and passes them to `like`.

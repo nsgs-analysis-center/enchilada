@@ -231,6 +231,20 @@ class TestPostInitValidation:
         with pytest.raises(ValueError, match="sample_rate_hz"):
             make_observed(rng, sample_rate_hz=sample_rate_hz)
 
+    @pytest.mark.parametrize("sample_rate_hz", [np.array(0.5), True])
+    def test_bool_or_non_real_sample_rate_hz_rejected(self, rng, sample_rate_hz):
+        with pytest.raises(TypeError, match="sample_rate_hz must be a real number"):
+            make_observed(rng, sample_rate_hz=sample_rate_hz)
+
+    @pytest.mark.parametrize(
+        "sample_rate_hz",
+        [np.float32(0.5), np.float64(0.5), 2],
+        ids=["float32", "float64", "int"],
+    )
+    def test_real_scalar_sample_rate_hz_accepted(self, rng, sample_rate_hz):
+        data = make_observed(rng, sample_rate_hz=sample_rate_hz)
+        assert data.grid.sample_rate_hz == float(sample_rate_hz)
+
     def test_frequency_domain_arrays_live_on_rfft_grid(self, rng):
         n = 64
         good = make_observed(

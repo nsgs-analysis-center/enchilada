@@ -1,3 +1,4 @@
+import numbers
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Never
 
@@ -120,6 +121,9 @@ class L1Data:
 
     def _validate_conventions(self) -> None:
         """Scalar run settings: rates, epoch, and convention strings."""
+        rate = self.sample_rate_hz
+        if isinstance(rate, bool) or not isinstance(rate, numbers.Real):
+            raise TypeError(f"sample_rate_hz must be a real number, got {rate!r}")
         if not np.isfinite(self.sample_rate_hz) or self.sample_rate_hz <= 0:
             raise ValueError(
                 f"sample_rate_hz must be a positive finite number in Hz, "
