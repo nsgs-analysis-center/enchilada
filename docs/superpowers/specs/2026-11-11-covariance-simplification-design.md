@@ -1,10 +1,12 @@
 # Covariance simplification design
 
 Date: 2026-11-11
-Status: approved design (five sections approved in discussion 2026-11-11); awaiting
-the user's review of the written spec
+Status: approved design (five sections approved in discussion 2026-11-11; the PSD
+and variance helpers removed on review 2026-11-12); awaiting the user's review
+of the written spec
 Branch: `covariance-simplification` (from `main` at a827b69)
-Supersedes: sections 1, 4 and 6 of `2026-11-10-covariance-object-design.md`, and
+Supersedes: sections 1, 3.2 to 3.4, 4 and 6 of
+`2026-11-10-covariance-object-design.md`, and
 section 4 (the enchilada adapter) of domainia's
 `docs/superpowers/specs/2026-10-31-domainia-general-library-design.md`, which still
 names `TranslatedCovariance` and `DataCovariance` as they were before 0.3.0.
@@ -12,7 +14,8 @@ names `TranslatedCovariance` and `DataCovariance` as they were before 0.3.0.
 ## Goal
 
 Make `Covariance` smaller and easier to maintain without removing a capability
-anything uses, and connect it to the translation layer that exists. `domainia`
+anything uses (a convenience that is one line of `like` away is not a
+capability), and connect it to the translation layer that exists. `domainia`
 (`~/Documents/lisa/domainia`, 2.0.0) translates a covariance lazily as an
 *operator* seen from another domain; it never produces covariance arrays on the
 target grid. The seam left in 0.3.0 assumed arrays would come back, and four of
@@ -29,9 +32,13 @@ callers outside the module and its own test file:
 | XYZ to AET derivation, its cache, the bidirectional link, `__getstate__`/`__setstate__` | 110 | none |
 | Cross-channel pairs and the per-point positive-definiteness check | 60 | two blocks asserting the cross terms are zero |
 | Attribute access (`cov.AE`), the reserved-name and ambiguity rules | 70 | `cov.A` in one notebook |
+| `from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the `psd(freqs[, channel])` model protocol | 120 | tests, examples and the README; nothing in the package calls them |
 
 Every example and benchmark uses A, E, T data with independent channels and
-reads per-point variances through `noise_variance` or `noise_psd`.
+reads per-point variances through `noise_variance` or `noise_psd`. The only
+call to a model's `psd` inside the package is in `from_psd`: the framework
+never needs a PSD, only a covariance on a grid, so PSD knowledge belongs to
+the noise blocks.
 
 domainia facts checked against its source:
 
@@ -60,6 +67,7 @@ domainia facts checked against its source:
 | Grid on the object | Yes; reverses the 2026-11-10 grid-free decision |
 | Storage layout | One stacked `(K, K, *S)` Hermitian array; the friendly dict stays the input; reverses the 2026-11-10 one-array-per-pair decision |
 | The full form | Removed |
+| PSD and variance helpers | Removed: `from_psd`, `from_variance`, `noise_psd`, `noise_variance` and the `psd(...)` model protocol; a noise block builds its covariance with `like` and reads `pair` |
 | domainia dependency | Optional and private; no PyPI extra; the core stays NumPy-only |
 | Where the Wheel keeps the covariance | One native `Covariance` on its owner's grid; nothing is translated back |
 | Version | 0.4.0 |
@@ -120,8 +128,8 @@ scope (it was the removed full form, and domainia's `DenseOperator` covers it).
 3. `blocks`: an `np.ndarray` of floating or complex dtype (`TypeError`), shape
    `(K, K) + grid.channel_shape`, every entry finite (`ValueError`).
 4. Hermitian exactly: `blocks` equals `conj(swapaxes(blocks, 0, 1))` element for
-   element. The constructors below produce exact symmetry; a caller assembling
-   a product symmetrises first.
+   element. `like` (section 2.3) and `in_basis` produce exact symmetry; a caller
+   assembling a product symmetrises first.
 5. Real where the domain requires it. Time and WDM grids: a complex dtype
    raises `ValueError`, as in domainia, because complex blocks are valid on a
    frequency grid so the dtype is a wrong value, not a wrong kind. Frequency
@@ -140,11 +148,10 @@ scope (it was the removed full form, and domainia's `DenseOperator` covers it).
 There is no reserved-name check on channel names: a channel whose name equals
 an attribute of the class is reachable through `pair()` only (section 2.4).
 
-### 2.3 Constructors
+### 2.3 Constructor from a mapping
 
-All three take the `L1Data` whose grid and channel order the covariance adopts.
-
-`Covariance.like(data, pairs)`. Keys are a channel name (`"A"`), a two-channel
+`Covariance.like(data, pairs)` is the one classmethod. It takes the `L1Data`
+whose grid and channel order the covariance adopts. Keys are a channel name (`"A"`), a two-channel
 concatenation resolved by `split_pair_name` (`"AE"`), or a `(first, second)`
 tuple. An unknown name or an unresolvable string raises `ValueError`. Any key
 `(a, b)` sets `blocks[a, b] = value` and `blocks[b, a] = conj(value)`; two keys
@@ -152,20 +159,11 @@ naming one pair in either orientation raise `ValueError`. Every channel's own
 entry is required; an absent off-diagonal pair is zero. Each value must have
 `grid.channel_shape` (`ValueError`). The result is validated by the constructor.
 
-`Covariance.from_psd(data, model)`. `data.grid.data_domain` must be
-`"frequency"` (`ValueError`); `model.psd` must be callable (`TypeError`). For
-each channel the model is called as `model.psd(frequencies, channel)` with
-`frequencies = np.fft.rfftfreq(N, d=1 / sample_rate_hz)`; the signature
-introspection of 0.3.0 is removed. The returned values must be real numeric
-(`TypeError`), of shape `()` or `(N // 2 + 1,)`, finite and strictly positive at
-every bin including DC (`ValueError`). `blocks[i, i] = (Tobs / 2) * S` at every
-bin; off-diagonal blocks are zero.
-
-`Covariance.from_variance(data, variance)`. `data.grid.data_domain` must be
-`"time"` (`ValueError`). `variance` is a scalar shared by all channels or a
-mapping with exactly the channel names; each value a finite positive real
-number (`TypeError` for a non-real value, `ValueError` otherwise).
-`blocks[i, i]` is that constant at every sample.
+`from_psd` and `from_variance` are removed. A noise model, white or coloured,
+is a block's business: the block computes its per-point variances on the grid
+of the data it received and passes them to `like`. The package never calls a
+model's `psd` method and defines no protocol for one. Section 2.6 records the
+one convention a block needs.
 
 ### 2.4 Access
 
@@ -204,16 +202,19 @@ variance below float64 roundoff of the others, for example T far below A at the
 lowest LISA frequencies), chaining the original. `hasattr(cov, "X")` can
 therefore raise `ValueError`, as in 0.3.0.
 
-### 2.6 Read-backs
+### 2.6 Units
 
-`noise_psd(channel)`: frequency grid only (`ValueError`), unknown channel
-`ValueError`; returns `2 * blocks[i, i].real / Tobs` at every bin.
-
-`noise_variance(channel)`: time grid returns the constant variance
-(`ValueError` unless constant to `rtol=1e-12`); frequency grid returns the
-trapezoid integral of `noise_psd` with half weight at DC and at Nyquist for
-even `N`, times `1 / Tobs`, so white noise reads back as exactly `sigma**2`;
-WDM grid raises `ValueError`.
+`blocks` holds variances in the squared units of the data's coordinates on its
+grid: `x_n**2` in time, `(dt * rfft(x))**2` in frequency, squared WDM
+coefficients in WDM. The package converts neither to nor from a one-sided PSD,
+so `noise_psd` and `noise_variance` are removed; `pair(ch, ch)` is the
+read-back. The one convention a noise block needs follows from
+`X = dt * rfft(x)`: stationary noise with one-sided PSD `S` has bin variance
+`C_k = (Tobs / 2) * S(f_k)` at every rfft bin, DC and Nyquist included, with
+`Tobs = N / fs`. White noise of variance `sigma**2` per sample therefore has
+`C_k = N * dt**2 * sigma**2` at every bin and, on a WDM grid, `dt * sigma**2`
+at every active pixel. The README states these beside the Fourier convention,
+where a block author looks for them.
 
 ### 2.7 Copies
 
@@ -306,7 +307,7 @@ Members: `channel_names`, `degrees_of_freedom`, `check_compatible(data)` (grid
 equality and channel names, as the native), and `apply`, `solve`, `project`,
 `quadratic_form`, `log_determinant` with the same input rules as section 2.8,
 answered on `grid` through the translated operator. It has no `blocks`,
-`pair`, `noise_psd`, `noise_variance` or `in_basis`: a block that needs
+`pair` or `in_basis`: a block that needs
 per-point arrays tests `isinstance(covariance, Covariance)` and raises
 otherwise, which is what the `form` guards in `examples/toy_fit.py`,
 `examples/gb_model.py` and `examples/create_block.ipynb` do today.
@@ -386,13 +387,13 @@ operator design: a WDM publication has no array form on a time grid.
   `add` wraps it.
 
 What a block sees: `covariance.quadratic_form(residual)` and
-`log_determinant()` always; `covariance.A`, `pair`, `noise_psd`,
-`noise_variance` and `in_basis` when it is a native `Covariance`.
+`log_determinant()` always; `covariance.A`, `pair` and `in_basis` when it is a
+native `Covariance`.
 
 ## 5. Errors
 
 `TypeError` for a wrong kind of argument (a non-array, a non-`Grid`, a
-non-callable PSD model, a `TranslatedCovariance` in a `BlockState`);
+`TranslatedCovariance` in a `BlockState`);
 `ValueError` for a wrong value (a shape, a non-finite entry, a complex array on
 a time or WDM grid, a non-Hermitian block, a non-positive variance, a grid or
 channel mismatch, an unknown channel or basis); `AttributeError` for
@@ -403,20 +404,25 @@ coverage configuration drops it.
 ## 6. Testing
 
 - `tests/test_covariance.py` is rewritten around the new layout: construction
-  rules one by one, the three constructors, `pair` and the attribute sugar,
-  `in_basis` against the explicit `M C M^T` product and its round trip, the
-  T-below-roundoff error, the read-backs, copy, deepcopy and pickle,
+  rules one by one, `like`, `pair` and the attribute sugar, `in_basis` against
+  the explicit `M C M^T` product and its round trip, the T-below-roundoff
+  error, copy, deepcopy and pickle,
   `check_compatible`, and the five operator methods against dense
   real-coordinate matrices on small grids in time, frequency and WDM, including
-  a complex Hermitian cross term in frequency. About 45 tests.
+  a complex Hermitian cross term in frequency. About 40 tests.
+- `tests/conftest.py` gains `white_covariance(data, variance)`: `like` with the
+  section 2.6 constants for the data's domain (`sigma**2` per time sample,
+  `N * dt**2 * sigma**2` per frequency bin, `dt * sigma**2` at active WDM
+  pixels and zero elsewhere). It replaces the `from_variance` and `from_psd`
+  calls in tests and the `FlatPSD`, `UnitPSD` and `White` test doubles.
 - The weights of section 2.8 are pinned natively, with no domainia: the same
-  white noise built as `from_variance(time_data, sigma**2)` and as
-  `from_psd(frequency_data, S = 2 sigma**2 / fs)` gives equal `quadratic_form`
-  on `x` and on `dt * rfft(x)`, and `log_determinant` values that differ by
-  exactly `2 * K * N * (log dt + 0.5 * log N)`, domainia's coordinate Jacobian.
-  A WDM covariance built with `like` on a zero-valued WDM `L1Data` (variance
-  `dt * sigma**2` at active pixels) pins the WDM leg of `log_determinant`,
-  `K * N * log dt` above the time value, without the WDM backend.
+  white noise built with `white_covariance` on time data and on its spectrum
+  gives equal `quadratic_form` on `x` and on `dt * rfft(x)`, and
+  `log_determinant` values that differ by exactly
+  `2 * K * N * (log dt + 0.5 * log N)`, domainia's coordinate Jacobian. The
+  WDM covariance on a zero-valued WDM `L1Data` pins the WDM leg of
+  `log_determinant`, `K * N * log dt` above the time value, without the WDM
+  backend.
 - `tests/test_grid.py` covers `Grid` validation and members and `L1Data.grid`.
 - `tests/test_translated_covariance.py` skips without domainia and pins: same
   grid returns a copy; another grid returns a `TranslatedCovariance`;
@@ -447,22 +453,39 @@ coverage configuration drops it.
 
 All mechanical:
 
-- `noise_variance(ch, data)` and `noise_psd(ch, data)` drop the second
-  argument (about 40 sites in tests, examples and the README).
+- `noise_variance(ch, data)` and `noise_psd(ch, data)` calls (about 40 sites in
+  tests, examples and the README) become `pair(ch, ch)` reads in the units of
+  section 2.6, or go where a test only exercised the read-back. Two blocks
+  consume the value: the toy block in `examples/toy_fit.py` divides by the
+  per-sample array instead of a scalar, and the GB block in
+  `examples/gb_model.py` feeds a narrowband likelihood written in PSD units,
+  so it converts the bin variances back with `2 * C / Tobs` from
+  `conditional_residual.Tobs` rather than rewriting the likelihood.
 - `transform(cov, ..., reference_data=...)` drops the keyword (14 files).
 - `covariance.form != "diagonal"` guards in `examples/toy_fit.py`,
   `examples/gb_model.py` and `examples/create_block.ipynb` become
   `not isinstance(covariance, Covariance)`.
-- Two test PSD doubles with `psd(self, f)` gain the `channel` parameter.
-- `Covariance.like`, `from_psd` and `from_variance` call sites are unchanged.
+- `from_variance` (about 60 sites, nearly all tests) and `from_psd` (about 22)
+  become `like` calls: tests through `white_covariance`;
+  `examples/toy_fit.py`, `benchmarks/benchmark_wheel.py`,
+  `examples/create_block.ipynb` and `examples/domain_translation.ipynb` build
+  the constant arrays in place; `examples/gb_model.py` keeps
+  `FixedLISANoise.psd` as user code, and both its noise publication and the
+  initial covariance in `examples/gb_block_eryn.ipynb` pass
+  `(Tobs / 2) * noise.psd(freqs)` per channel to `like`, with the model
+  floored at low frequency as today. The test PSD doubles are deleted.
+- `Covariance.like` call sites are unchanged.
 - README: the attribute API, the shape rule (one form), the operator methods,
-  the seam, the domainia install note; the Known limitations bullet "No
+  the seam, the domainia install note, and the section 2.6 units beside the
+  Fourier convention in place of the `from_psd` passage and the
+  `psd(frequencies[, channel])` protocol; the Known limitations bullet "No
   covariance translation yet" is replaced by the domainia requirement.
 - CHANGELOG 0.4.0: Added `Grid`, `L1Data.grid`, `TranslatedCovariance`,
-  `NoiseModel`, the operator methods; Changed the storage layout, the
-  constructors' grid capture, the Wheel's storage rule, `Block.sample`'s
-  parameter type; Removed the full form, `form`, the derived-basis cache,
-  `reference_data` for covariances, `NotImplementedError` from the seam.
+  `NoiseModel`, the operator methods; Changed the storage layout, `like`'s
+  grid capture, the Wheel's storage rule, `Block.sample`'s parameter type;
+  Removed the full form, `form`, the derived-basis cache, `from_psd`,
+  `from_variance`, `noise_psd`, `noise_variance`, `reference_data` for
+  covariances, `NotImplementedError` from the seam.
 - `pyproject.toml` version 0.4.0.
 - `docs/wheel.svg` is the user's and is left alone.
 
