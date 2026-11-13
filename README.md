@@ -263,7 +263,9 @@ explicit `Covariance` when constructing Wheel:
 import numpy as np
 from enchilada import Covariance, Wheel
 
-noise = Covariance.like(observed, {"A": np.full(observed.N, 0.25)})
+noise = Covariance.like(
+    observed, {ch: np.full(observed.N, 0.25) for ch in observed.channel_names}
+)
 wheel = Wheel(
     observed_data=observed,
     initial_covariance=noise,
