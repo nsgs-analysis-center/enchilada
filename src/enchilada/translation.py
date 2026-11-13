@@ -86,6 +86,11 @@ def transform(
     WDM coefficient transforms require the separately installed local backend
     and Python >=3.13. Same-grid copies do not.
     """
+    if isinstance(value, Covariance):
+        raise TypeError(
+            "transform does not take a Covariance: it carries its grid and does "
+            "not translate between domains; use copy() for an independent copy"
+        )
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")
     if target_domain != "wdm" and (
@@ -154,9 +159,4 @@ def transform(
                 target_wdm_grid=grid,
             )
         return replace(source_state, template=signal)
-    if isinstance(value, Covariance):
-        raise TypeError(
-            "transform does not take a Covariance: it carries its grid and does "
-            "not translate between domains; use copy() for an independent copy"
-        )
     raise TypeError("transform expects L1Data or BlockState")

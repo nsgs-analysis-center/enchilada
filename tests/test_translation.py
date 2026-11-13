@@ -135,6 +135,9 @@ def test_transform_rejects_a_covariance():
         transform(covariance, "time")
     with pytest.raises(TypeError, match="does not take a Covariance"):
         transform(covariance, "frequency", reference_data=data)
+    # Refused before the arguments: not the division-count ValueError.
+    with pytest.raises(TypeError, match="does not take a Covariance"):
+        transform(covariance, "frequency", num_frequency_divisions=8)
     with pytest.raises(TypeError, match="expects L1Data or BlockState"):
         transform({"A": np.zeros(4)}, "time")
 
