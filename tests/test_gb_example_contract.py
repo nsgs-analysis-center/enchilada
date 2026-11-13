@@ -72,7 +72,7 @@ def test_gb_prior_keeps_continuation_on_its_block(gb_model, spectral_context):
     assert other.state.coords == {}
 
 
-def test_gb_requires_a_diagonal_form_frequency_covariance_on_the_data_grid(
+def test_gb_requires_a_frequency_covariance_on_the_data_grid(
     gb_model, spectral_context
 ):
     data, _ = spectral_context
