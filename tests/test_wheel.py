@@ -211,7 +211,7 @@ class TestLedger:
         with pytest.raises(ValueError, match="num_cycles"):
             wheel.run(-1)
         with pytest.raises(ValueError, match="num_cycles"):
-            wheel.run(True)  # bool is not a cycle count
+            wheel.run(True)  # bool is not a cycle count  # ruff: ignore[FBT003]
 
     def test_run_accepts_numpy_integers(self, observed):
         wheel = Wheel(observed)

@@ -120,12 +120,39 @@ fail_under = 95
 [tool.ruff]
 line-length = 88
 src = ["src", "tests", "examples", "benchmarks", "forge"]
+output-prefer-rule-codes = true
 
 [tool.ruff.lint]
-select = ["E4", "E5", "E7", "E9", "F", "I", "B", "UP"]  # E5 = line length
+# E5 = line length
+select = ["E", "F", "I", "B", "UP", "S", "ANN", "TC", "FBT", "B", "YTT", "ASYNC", "DTZ", "EXE",
+    "INT", "ICN", "LOG", "G", "ISC", "PIE", "INP", "PYI", "RET", "SLOT", "TID", "PTH", "PERF",
+    "W", "PGH", "PLC01", "PLE", "PLW", "FURB"]
+
+# The project uses many assertions
+ignore = ["S101"]
+
+# Don't automatically remove unused variables without human review
+unfixable = ["F841"]
 
 [tool.ruff.lint.per-file-ignores]
 # Notebooks group imports per cell rather than in one sorted block (I001) and
 # print long formatted lines (E501). Both were verified to fire; do not broaden
 # this list without checking, so real problems in notebook cells still surface.
-"examples/*.ipynb" = ["I001", "E501"]
+"examples/*.ipynb" = ["I001", "E501", "ANN"]
+# Some linting rules can be relaxed for tests
+# Ignore some rules restricting subprocceses in tests
+# The tests, examples, and benchmarks are not currently fully type annotated
+# Tests don't pass PLW1510 although they possibly should
+"tests/*.py" = ["S403", "S404", "S603", "ANN", "PLW1510"]
+"examples/*.py" = ["ANN"]
+"benchmarks/*.py" = ["ANN"]
+"forge/*.ipynb" = ["ANN"]
+
+[tool.ruff.format]
+exclude = ["docs/**"]
+
+[tool.pydoclint]
+# linting for docstrings
+check-return-types = true
+check-class-attributes = true
+allow-init-docstring = true

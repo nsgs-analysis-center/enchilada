@@ -11,7 +11,6 @@ repos:
   - id: check-added-large-files
     args: [--maxkb=2000]
   - id: check-case-conflict
-  - id: check-docstring-first
   - id: check-json
   - id: check-toml
   - id: check-xml
@@ -41,3 +40,10 @@ repos:
   rev: v1.7.12
   hooks:
   - id: actionlint
+
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.17.1
+  hooks:
+  - id: ruff-check
+    args: [--fix, --preview]
+  - id: ruff-format
