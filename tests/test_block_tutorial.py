@@ -84,7 +84,7 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
     block = module.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=0.4, steps_per_call=20
     )
-    start = block._render(data, 0.0)
+    start = block.state_from_parameters({"amplitude": 0.0}, data)
     # Identical continuation state and RNG, but the other blocks change the
     # conditional data and covariance. A cached old target would repeat a draw.
     positive = block.sample(data, noise, start, rng=np.random.default_rng(1))
@@ -118,7 +118,7 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
     block = tutorial_definitions.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=1e12, steps_per_call=8
     )
-    start = block._render(data, 0.0)
+    start = block.state_from_parameters({"amplitude": 0.0}, data)
     result = block.sample(data, noise, start, rng=np.random.default_rng(1))
     assert result.parameters == start.parameters
     np.testing.assert_array_equal(result.template["A"], start.template["A"])

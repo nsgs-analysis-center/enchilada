@@ -1,8 +1,9 @@
 """ForgeBlock: the skeleton to fill in.
 
-The methods marked `# EDIT` are the model: `_template` renders the signal on
-the block's grid, `initial_sample` draws or renders the start, `sample`
-advances the state; `_check_residual` and `_check_covariance` say what the
+The methods marked `# EDIT` are the model: `state_from_parameters` renders the
+signal on the block's grid from one parameter set, `initial_sample` draws or
+renders the start, `sample` advances the state; `_check_residual` and
+`_check_covariance` say what the
 model needs from its inputs. The placeholder is a sinusoid of one amplitude
 at `frequency_hz`, rendered natively on the frequency grid, with a Gaussian
 prior on the amplitude, so `sample` is an exact conjugate Gaussian draw: the
@@ -14,6 +15,7 @@ normalisation on the frequency grid; a replacement likelihood reuses them.
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -145,20 +147,18 @@ class ForgeBlock:
             np.sin(2 * np.pi * self.frequency_hz * times_s)
         )
 
-    def _template(
-        self,
-        conditional_residual: L1Data,
-        amplitude: float,
-        basis: np.ndarray | None = None,
+    def state_from_parameters(
+        self, parameters: Mapping[str, Any], reference_data: L1Data
     ) -> BlockState:
-        # EDIT: render your waveform on the block's grid (the placeholder's lives
-        # in _basis).
-        self._check_residual(conditional_residual)
-        if basis is None:
-            basis = self._basis(conditional_residual)
-        return conditional_residual.block_state(
-            {name: amplitude * basis for name in conditional_residual.channel_names},
-            parameters={"amplitude": float(amplitude)},
+        # EDIT: render your waveform on the block's grid from one parameter set
+        # (the placeholder's lives in _basis). check_block and L2Data call this;
+        # keep it a pure function of the parameters and the grid.
+        self._check_residual(reference_data)
+        amplitude = float(parameters["amplitude"])
+        basis = self._basis(reference_data)
+        return reference_data.block_state(
+            {name: amplitude * basis for name in reference_data.channel_names},
+            parameters={"amplitude": amplitude},
         )
 
     def initial_sample(
@@ -172,7 +172,9 @@ class ForgeBlock:
         amplitude = self.start_amplitude
         if amplitude is None:
             amplitude = rng.normal(0.0, self.prior_std)
-        return self._template(conditional_residual, amplitude)
+        return self.state_from_parameters(
+            {"amplitude": amplitude}, conditional_residual
+        )
 
     def sample(
         self,
@@ -201,7 +203,9 @@ class ForgeBlock:
             / precision
         )
         std = precision**-0.5
-        moved = self._template(conditional_residual, rng.normal(mean, std), basis)
+        moved = self.state_from_parameters(
+            {"amplitude": rng.normal(mean, std)}, conditional_residual
+        )
         self.state.num_sample_calls += 1
         self.state.last_posterior_mean = mean
         self.state.last_posterior_std = std
