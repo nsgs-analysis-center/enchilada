@@ -24,13 +24,16 @@ class FixedSignal:
         self.name = name
         self.level = level
 
-    def initial_sample(self, conditional_residual, covariance, *, rng):
-        return conditional_residual.block_state(
+    def state_from_parameters(self, parameters, reference_data):
+        return reference_data.block_state(
             {
                 name: np.full_like(values, self.level)
-                for name, values in conditional_residual.channel_data.items()
+                for name, values in reference_data.channel_data.items()
             }
         )
+
+    def initial_sample(self, conditional_residual, covariance, *, rng):
+        return self.state_from_parameters({}, conditional_residual)
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         return current_block_state

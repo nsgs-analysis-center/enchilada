@@ -6,7 +6,9 @@ draws its own start from its prior in initial_sample, with the RNG Wheel passes
 at registration; an on_cycle_complete callback collects posterior chains outside
 the blocks. The sine blocks register as signal blocks and the white-noise block
 as the one noise block, so the sines receive exactly its covariance and the
-noise block itself receives None because it is alone. These
+noise block itself receives None because it is alone. Each block also
+implements state_from_parameters, which rebuilds its state from a parameter
+set. These
 blocks request time-domain inputs; Wheel also runs them on Fourier or WDM
 observations with data_domain="time", because the noise block publishes its
 covariance on that time grid. Their likelihood requires time-domain noise with
@@ -15,6 +17,8 @@ Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
+
+from typing import Any
 
 import numpy as np
 
@@ -43,10 +47,14 @@ class SineBlock:
         )
         return np.sin(2.0 * np.pi * self.freq * t)
 
-    def _render(self, conditional_residual: L1Data, amplitude: float) -> BlockState:
-        basis = self._basis(conditional_residual)
-        return conditional_residual.block_state(
-            {ch: amplitude * basis for ch in conditional_residual.channel_names},
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """The sinusoid at the given amplitude on `reference_data`'s time grid."""
+        amplitude = float(parameters["amplitude"])
+        basis = self._basis(reference_data)
+        return reference_data.block_state(
+            {ch: amplitude * basis for ch in reference_data.channel_names},
             parameters={"amplitude": amplitude},
         )
 
@@ -58,8 +66,8 @@ class SineBlock:
         rng: np.random.Generator,
     ) -> BlockState:
         """Draw the amplitude from its prior and render it on the time grid."""
-        return self._render(
-            conditional_residual, float(rng.normal(0.0, self.prior_std))
+        return self.state_from_parameters(
+            {"amplitude": float(rng.normal(0.0, self.prior_std))}, conditional_residual
         )
 
     def sample(
@@ -95,7 +103,9 @@ class SineBlock:
             precision += float(basis @ weights)
             weighted_data += float(conditional_residual.channel_data[ch] @ weights)
         amplitude = rng.normal(weighted_data / precision, np.sqrt(1.0 / precision))
-        return self._render(conditional_residual, float(amplitude))
+        return self.state_from_parameters(
+            {"amplitude": float(amplitude)}, conditional_residual
+        )
 
 
 class WhiteNoiseBlock:
@@ -119,18 +129,22 @@ class WhiteNoiseBlock:
                 "register it as the only noise block"
             )
 
-    def _render(self, conditional_residual: L1Data, variance: float) -> BlockState:
-        if conditional_residual.data_domain != "time":
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """White noise of variance sigma**2 on `reference_data`'s time grid."""
+        if reference_data.data_domain != "time":
             raise ValueError("WhiteNoiseBlock requires time-domain data")
+        sigma = float(parameters["sigma"])
         return BlockState(
             covariance=Covariance.like(
-                conditional_residual,
+                reference_data,
                 {
-                    ch: np.full(conditional_residual.num_time_samples, variance)
-                    for ch in conditional_residual.channel_names
+                    ch: np.full(reference_data.num_time_samples, sigma**2)
+                    for ch in reference_data.channel_names
                 },
             ),
-            parameters={"sigma": float(np.sqrt(variance))},
+            parameters={"sigma": sigma},
         )
 
     def initial_sample(
@@ -142,8 +156,9 @@ class WhiteNoiseBlock:
     ) -> BlockState:
         """Draw the variance from its inverse-gamma prior and publish it."""
         self._require_alone(covariance)
-        return self._render(
-            conditional_residual, float(self.scale / rng.gamma(self.shape))
+        return self.state_from_parameters(
+            {"sigma": float(np.sqrt(self.scale / rng.gamma(self.shape)))},
+            conditional_residual,
         )
 
     def sample(
@@ -164,7 +179,9 @@ class WhiteNoiseBlock:
         )
         shape = self.shape + 0.5 * n_total
         scale = self.scale + 0.5 * ssr
-        return self._render(conditional_residual, float(scale / rng.gamma(shape)))
+        return self.state_from_parameters(
+            {"sigma": float(np.sqrt(scale / rng.gamma(shape)))}, conditional_residual
+        )
 
 
 TRUTH = {"slow": 3.0, "fast": 2.0, "sigma": 0.5}

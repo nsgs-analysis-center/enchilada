@@ -1,6 +1,7 @@
 """A noise block that publishes one fixed covariance on every call."""
 
 from copy import deepcopy
+from typing import Any
 
 import numpy as np
 
@@ -43,6 +44,12 @@ class FixedNoiseBlock:
         rng: np.random.Generator,
     ) -> BlockState:
         """Publish the configured covariance; the inputs and ``rng`` are unused."""
+        return self._publish()
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """Publish the configured covariance; the block has no parameters."""
         return self._publish()
 
     def sample(

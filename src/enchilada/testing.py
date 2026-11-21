@@ -44,6 +44,12 @@ class EchoBlock:
         """Publish an empty physical state; the counter and the RNG are untouched."""
         return BlockState()
 
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """Rebuild the empty state; EchoBlock publishes no signal and no parameters."""
+        return BlockState()
+
     def sample(
         self,
         conditional_residual: L1Data,

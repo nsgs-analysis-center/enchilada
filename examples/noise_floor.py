@@ -78,10 +78,14 @@ class ExcessNoiseBlock:
             },
         )
 
-    def _render(self, conditional_residual: L1Data, variance: float) -> BlockState:
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """The block's own covariance at the given variance on the time grid."""
+        variance = float(parameters["variance"])
         return BlockState(
-            covariance=self._own(conditional_residual, variance),
-            parameters={"variance": float(variance)},
+            covariance=self._own(reference_data, variance),
+            parameters={"variance": variance},
         )
 
     def _log_likelihood(
@@ -123,7 +127,9 @@ class ExcessNoiseBlock:
         """Draw the excess variance from its log-uniform prior and publish it."""
         self._require_floor(covariance)
         log_variance = rng.uniform(np.log(self.low), np.log(self.high))
-        return self._render(conditional_residual, float(np.exp(log_variance)))
+        return self.state_from_parameters(
+            {"variance": float(np.exp(log_variance))}, conditional_residual
+        )
 
     def sample(
         self,
@@ -153,7 +159,9 @@ class ExcessNoiseBlock:
             )
             if rng.random() < np.exp(min(0.0, proposed - current)):
                 log_variance, current = proposal, proposed
-        return self._render(conditional_residual, float(np.exp(log_variance)))
+        return self.state_from_parameters(
+            {"variance": float(np.exp(log_variance))}, conditional_residual
+        )
 
 
 def make_observed(seed: int = 0) -> L1Data:

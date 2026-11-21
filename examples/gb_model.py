@@ -136,7 +136,9 @@ class GBBlock:
     Register with ``wheel.add(block, role="signal", data_domain="frequency")``.
     This narrowband likelihood requires a frequency-domain covariance on the
     data grid with independent channels; it reads each channel's bin variances
-    and converts them to PSD units with ``2 C / Tobs``.
+    and converts them to PSD units with ``2 C / Tobs``. ``state_from_parameters``
+    renders any parameter set with a fresh GBGPU instance; ``initial_sample`` and
+    ``sample`` reuse theirs.
     """
 
     SUPPORTED_CHANNELS = ("A", "E")
@@ -248,6 +250,13 @@ class GBBlock:
             ),
             parameters=dict(zip(self.PARAMETER_NAMES, map(float, params), strict=True)),
         )
+
+    def state_from_parameters(self, parameters, reference_data):
+        """Render one parameter set on the frequency grid, from the parameters alone."""
+        if reference_data.data_domain != "frequency":
+            raise ValueError(f"{self.name}: GBBlock requires frequency-domain data")
+        params = np.array([float(parameters[name]) for name in self.PARAMETER_NAMES])
+        return self._render(_new_gb(), params, reference_data)
 
     def initial_sample(
         self,

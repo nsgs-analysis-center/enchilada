@@ -39,6 +39,9 @@ class DomainEcho:
         if covariance is not None:
             raise ValueError(f"{self.name}: expected no covariance in this walkthrough")
 
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState()
+
     def initial_sample(self, conditional_residual, covariance, *, rng):
         self._check_input(conditional_residual, covariance)
         return BlockState()
