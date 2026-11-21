@@ -253,6 +253,7 @@ def test_block_protocol_is_runtime_checkable():
 
     assert not isinstance(SampleOnly(), Block)
 
+    # ... nor is a class without state_from_parameters
     class NoRebuild:
         name = "n"
 

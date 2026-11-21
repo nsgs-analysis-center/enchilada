@@ -23,6 +23,8 @@ class Block(Protocol):
     block's role receives, and the campaign RNG. A block that starts at a known
     point takes that point in its constructor and returns it from
     `initial_sample`; a block that starts from its prior draws from `rng`.
+    `state_from_parameters` rebuilds the published state from its parameters
+    alone, so a campaign file can store parameters only.
 
     `conditional_residual` is the observed data minus every OTHER block's current
     signal; this block's signal is still present. The block does not perform
@@ -37,9 +39,6 @@ class Block(Protocol):
     A noise block publishes its complete covariance on every call and never a
     template; Wheel adds the noise blocks' covariances, so each block publishes
     only its own component. A joint model is two blocks.
-    `state_from_parameters` is the inverse of publishing: given a parameter set
-    it rebuilds the state those parameters describe, so the campaign file needs
-    to store parameters only.
 
     Each call, `initial_sample` included, receives independent snapshots of the
     conditional residual, covariance, and current state. Use the supplied RNG;
@@ -91,17 +90,19 @@ class Block(Protocol):
     ) -> BlockState:
         """Rebuild this block's complete physical state from one parameter set.
 
-        The template of a signal block or the covariance of a noise block,
-        with `parameters` echoed on the result, computed from `parameters`,
-        the block's own configuration and the grid metadata of
-        `reference_data` (its domain, sample count, rate, start time, channel
-        names, WDM grid and orbit), never from its channel values, a random
-        stream or the block's own sampling state. `reference_data` is on the
-        block's registered grid, the grid `sample` receives. Values read back
-        from a campaign file arrive as numpy scalars and arrays rather than
-        Python numbers; accept both.
-        `check_block` requires the rebuilt state to match the published one to
-        a relative 1e-9; `L2Data` uses it to turn recorded parameters back
-        into states and residuals. The Wheel never calls it during sampling.
+        Return the template (signal block) or covariance (noise block) these
+        parameters describe, with `parameters` on the result. Compute it from
+        `parameters`, the block's constructor configuration and
+        `reference_data`'s grid metadata only (domain, sample count, rate,
+        start time, channel names, WDM grid and orbit); never from
+        `reference_data`'s channel values, a random stream or state that
+        `sample` changes. `reference_data` is on the block's registered grid,
+        the grid `sample` receives. Read back from a campaign file, a float
+        arrives as `np.float64` and a list as an ndarray, so avoid list
+        operations and `isinstance(x, float)`. The simplest way to meet
+        `check_block`'s 1e-9 round trip is for `initial_sample` and `sample` to
+        end by calling this method. `L2Data` uses it to turn recorded
+        parameters back into states and residuals; the Wheel never calls it
+        during sampling.
         """
         ...

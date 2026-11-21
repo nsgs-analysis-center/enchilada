@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed, white_covariance
-from enchilada import BlockState, FixedNoiseBlock, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -285,40 +285,57 @@ def test_echo_continuation_belongs_to_each_block_instance(observed, rng):
     assert echo.state.num_sample_calls == 2
 
 
+class _Publishing:
+    """Test-block base: both sampling methods publish `self._state(...)`.
+
+    A subclass supplies `name`, `_state(data)` and `state_from_parameters`.
+    """
+
+    def initial_sample(self, conditional_residual, covariance, *, rng):
+        return self._state(conditional_residual)
+
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+        return self._state(conditional_residual)
+
+
+class _Amplitude(_Publishing):
+    """Publishes a constant template of `amplitude` per channel."""
+
+    name = "amplitude"
+    amplitude = 1.0
+
+    def _state(self, data, amplitude=None):
+        amplitude = self.amplitude if amplitude is None else amplitude
+        return data.block_state(
+            {ch: np.full(len(arr), amplitude) for ch, arr in data.channel_data.items()},
+            parameters={"amplitude": amplitude},
+        )
+
+
 class TestRoundTrip:
     """check_block rebuilds the block under test from its own parameters."""
 
-    def test_rebuilds_after_registration_and_after_every_cycle(self, observed):
+    @pytest.mark.parametrize(("num_cycles", "calls"), [(3, 5), (0, 1)])
+    def test_rebuilds_after_registration_and_after_every_cycle(
+        self, observed, num_cycles, calls
+    ):
         class Counting(FlatNoiseBlock):
-            calls = 0
+            def __init__(self, name, level):
+                super().__init__(name, level)
+                self.calls = 0
 
             def state_from_parameters(self, parameters, reference_data):
-                type(self).calls += 1
+                self.calls += 1
                 return super().state_from_parameters(parameters, reference_data)
 
-        check_block(Counting("noise", 1.0), observed, num_cycles=3, role="noise")
-        assert Counting.calls == 5
+        block = Counting("noise", 1.0)
+        check_block(block, observed, num_cycles=num_cycles, role="noise")
+        # step 0, one per cycle, and step 0 again after the run (not with 0 cycles)
+        assert block.calls == calls
 
     def test_a_template_the_parameters_do_not_determine_is_caught(self, observed):
-        class Doubling:
+        class Doubling(_Amplitude):
             name = "double"
-
-            def _state(self, data, amplitude):
-                return data.block_state(
-                    {
-                        ch: np.full_like(arr, amplitude)
-                        for ch, arr in data.channel_data.items()
-                    },
-                    parameters={"amplitude": amplitude},
-                )
-
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                return self._state(conditional_residual, 1.0)
-
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                return self._state(conditional_residual, 1.0)
 
             def state_from_parameters(self, parameters, reference_data):
                 return self._state(reference_data, 2 * parameters["amplitude"])
@@ -337,7 +354,8 @@ class TestRoundTrip:
         self, observed
     ):
         class Drifting(FlatNoiseBlock):
-            """Publishes level + 1 after the first sample but rebuilds the start."""
+            """Publishes `level + 1` from its first `sample` on, while the rebuild
+            gives `level`."""
 
             def sample(
                 self, conditional_residual, covariance, current_block_state, *, rng
@@ -359,50 +377,78 @@ class TestRoundTrip:
         ):
             check_block(Wrong("wrong"), observed, role="signal")
 
-    def test_round_off_is_tolerated(self, observed):
-        class Thirds:
+    @pytest.mark.parametrize(("error", "passes"), [(1e-12, True), (1e-7, False)])
+    def test_round_off_is_tolerated_but_a_real_difference_is_not(
+        self, observed, error, passes
+    ):
+        class Thirds(_Publishing):
             name = "thirds"
 
-            def _state(self, data, amplitude):
-                basis = np.arange(data.num_time_samples, dtype=float) / 7.0
+            def _state(self, data, amplitude=0.3):
+                basis = np.linspace(-1.0, 1.0, data.num_time_samples)
                 return data.block_state(
                     {ch: amplitude * basis for ch in data.channel_names},
                     parameters={"amplitude": amplitude},
                 )
 
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                return self._state(conditional_residual, 0.3)
-
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                return self._state(conditional_residual, 0.3)
-
             def state_from_parameters(self, parameters, reference_data):
                 return self._state(
-                    reference_data, (parameters["amplitude"] * 3.0) / 3.0
+                    reference_data, parameters["amplitude"] * (1 + error)
                 )
 
-        check_block(Thirds(), observed, role="signal")
+        if passes:
+            check_block(Thirds(), observed, role="signal")
+        else:
+            with pytest.raises(
+                ValueError, match="published template in channel 'A' at step 0"
+            ):
+                check_block(Thirds(), observed, role="signal")
 
-    def test_a_rebuild_that_reads_the_block_state_is_caught(self, observed):
-        class Remembering:
-            name = "remember"
-
-            def __init__(self):
-                self.amplitude = 1.0
+    def test_an_all_zero_channel_tolerates_nothing(self, observed):
+        class Silent(_Publishing):
+            name = "silent"
 
             def _state(self, data):
                 return data.block_state(
-                    {
-                        ch: np.full_like(arr, self.amplitude)
-                        for ch, arr in data.channel_data.items()
-                    },
-                    parameters={"amplitude": self.amplitude},
+                    {ch: np.zeros(data.num_time_samples) for ch in data.channel_names}
                 )
 
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                return self._state(conditional_residual)
+            def state_from_parameters(self, parameters, reference_data):
+                return reference_data.block_state(
+                    {
+                        ch: np.full(reference_data.num_time_samples, 1e-300)
+                        for ch in reference_data.channel_names
+                    }
+                )
+
+        with pytest.raises(
+            ValueError, match="published template in channel 'A' at step 0"
+        ):
+            check_block(Silent(), observed, role="signal")
+
+    def test_a_quiet_covariance_channel_is_checked_on_its_own_scale(self, observed):
+        n = observed.num_time_samples
+
+        class Loud(_Publishing):
+            name = "loud"
+
+            def _state(self, data, quiet=1e-12):
+                return data.block_state().with_covariance(
+                    Covariance.like(
+                        data,
+                        {"A": np.ones(n), "E": np.ones(n), "T": np.full(n, quiet)},
+                    )
+                )
+
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(reference_data, 2e-12)
+
+        with pytest.raises(ValueError, match="published covariance at step 0"):
+            check_block(Loud(), observed, role="noise")
+
+    def test_a_rebuild_that_reads_the_block_state_is_caught(self, observed):
+        class Remembering(_Amplitude):
+            name = "remember"
 
             def sample(
                 self, conditional_residual, covariance, current_block_state, *, rng
@@ -413,28 +459,20 @@ class TestRoundTrip:
             def state_from_parameters(self, parameters, reference_data):
                 return self._state(reference_data)  # reads self, not parameters
 
-        with pytest.raises(ValueError, match="at step 0 after 2 cycles"):
+        with pytest.raises(ValueError, match="rebuilt again after 2 cycles"):
             check_block(Remembering(), observed, num_cycles=2, role="signal")
 
     def test_a_rebuild_that_reads_channel_values_is_caught(self, observed):
-        assert np.any(observed.channel_data["A"])  # or this test could not fail
+        # a zero observation would equal the zeroed reference
+        assert np.any(observed.channel_data["A"])
 
-        class Copying:
+        class Copying(_Publishing):
             name = "copy"
 
             def _state(self, data):
                 return data.block_state(
-                    {ch: np.array(arr) for ch, arr in data.channel_data.items()},
-                    parameters={},
+                    {ch: np.array(arr) for ch, arr in data.channel_data.items()}
                 )
-
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                return self._state(conditional_residual)
-
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                return self._state(conditional_residual)
 
             def state_from_parameters(self, parameters, reference_data):
                 return self._state(reference_data)  # copies the reference values
@@ -443,3 +481,59 @@ class TestRoundTrip:
             ValueError, match="published template in channel 'A' at step 0"
         ):
             check_block(Copying(), observed, role="signal")
+
+    def test_a_rebuild_with_the_wrong_channels_says_which(self, observed):
+        class NoTemplate(_Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState()
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("rebuilt channels [], published ['A', 'E', 'T']"),
+        ):
+            check_block(NoTemplate(), observed, role="signal")
+
+    def test_a_rebuild_without_the_covariance_says_so(self, observed):
+        class NoCovariance(FlatNoiseBlock):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState()
+
+        with pytest.raises(ValueError, match="the rebuild has none"):
+            check_block(NoCovariance("noise", 1.0), observed, role="noise")
+
+    def test_a_rebuilt_template_off_the_grid_is_caught(self, observed):
+        class Complex(_Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState(
+                    template={
+                        ch: np.zeros(reference_data.num_time_samples, dtype=complex)
+                        for ch in reference_data.channel_names
+                    }
+                )
+
+        with pytest.raises(TypeError, match="complex"):
+            check_block(Complex(), observed, role="signal")
+
+    def test_the_rebuild_receives_file_typed_parameters(self, observed):
+        class Typed(_Amplitude):
+            def _state(self, data, amplitude=None):
+                state = super()._state(data)
+                return BlockState(
+                    template=state.template,
+                    parameters={"amplitude": 0.5, "weights": [1.0, 2.0]},
+                )
+
+            def state_from_parameters(self, parameters, reference_data):
+                assert isinstance(parameters["amplitude"], np.floating)
+                assert isinstance(parameters["weights"], np.ndarray)
+                return self._state(reference_data)
+
+        check_block(Typed(), observed, role="signal")
+
+    def test_a_rebuild_that_mutates_its_parameters_is_harmless(self, observed):
+        class Popping(_Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                amplitude = parameters.pop("amplitude")
+                return self._state(reference_data, amplitude)
+
+        check_block(Popping(), observed, num_cycles=2, role="signal")
