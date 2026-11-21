@@ -27,7 +27,7 @@ import os
 from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import h5py
 import numpy as np
@@ -38,6 +38,9 @@ from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid, WDMGrid
 from enchilada.translation import _data_on_grid, _state_on_grid
+
+if TYPE_CHECKING:
+    from enchilada.wheel import Role
 
 FORMAT = "enchilada-l2"
 FORMAT_VERSION = 1
@@ -169,6 +172,18 @@ def _recordable_array(label: str, key: str, value: Any) -> np.ndarray:
             "parameters must be bool, integer, float or complex scalars or arrays"
         )
     return array
+
+
+def _check_format(file: Any, label: str) -> None:
+    """Refuse a handle that is not a campaign file this enchilada reads."""
+    if file.attrs.get("format") != FORMAT:
+        raise ValueError(f"{label} is not an enchilada L2 file")
+    found = int(file.attrs["format_version"])
+    if found != FORMAT_VERSION:
+        raise ValueError(
+            f"{label} has format version {found}; this enchilada reads version "
+            f"{FORMAT_VERSION}"
+        )
 
 
 class _Recorder:
@@ -405,6 +420,16 @@ class _Recorder:
         group.attrs["num_entries"] = count + 1
 
 
+@dataclass(frozen=True)
+class _BlockInfo:
+    """One block's group read once: its schema, first step and bounded entry count."""
+
+    group: Any
+    schema: _Schema
+    first_step: int
+    count: int
+
+
 class L2Data:
     """A read-only view of a campaign file: chains, parameters and rebuilt states.
 
@@ -426,21 +451,48 @@ class L2Data:
     def __init__(
         self, file: Any, *, observed_data: L1Data | None = None, owns_file: bool = True
     ) -> None:
+        _check_format(file, str(getattr(file, "filename", file)))
         self._file = file
         self._owns_file = owns_file
         self._observed: L1Data | None = None
         if observed_data is not None:
-            if tuple(observed_data.channel_names) != self.channel_names:
+            self._attach(observed_data)
+
+    def _attach(self, observed_data: L1Data) -> None:
+        attrs = self._require_open()["observation"].attrs
+        if tuple(observed_data.channel_names) != self.channel_names:
+            raise ValueError(
+                f"observed_data channel names {tuple(observed_data.channel_names)} "
+                f"do not match the file's {self.channel_names}"
+            )
+        if observed_data.grid != self.observation_grid:
+            raise ValueError(
+                f"observed_data grid {observed_data.grid} does not match the "
+                f"file's observation grid {self.observation_grid}"
+            )
+        for field, found, expected in (
+            (
+                "start_time_gps",
+                observed_data.start_time_gps,
+                float(attrs["start_time_gps"]),
+            ),
+            (
+                "tdi_generation",
+                observed_data.tdi_generation,
+                str(attrs["tdi_generation"]),
+            ),
+            (
+                "physical_observable",
+                observed_data.physical_observable,
+                str(attrs["physical_observable"]),
+            ),
+        ):
+            if found != expected:
                 raise ValueError(
-                    f"observed_data channel names {tuple(observed_data.channel_names)} "
-                    f"do not match the file's {self.channel_names}"
+                    f"observed_data {field} {found!r} does not match the file's "
+                    f"{expected!r}"
                 )
-            if observed_data.grid != self.observation_grid:
-                raise ValueError(
-                    f"observed_data grid {observed_data.grid} does not match the "
-                    f"file's observation grid {self.observation_grid}"
-                )
-            self._observed = observed_data
+        self._observed = observed_data
 
     @classmethod
     def open(
@@ -449,21 +501,16 @@ class L2Data:
         """Open a campaign file read-only, optionally attaching the observation."""
         file = h5py.File(os.fspath(path), "r")
         try:
-            if file.attrs.get("format") != FORMAT:
-                raise ValueError(f"{os.fspath(path)} is not an enchilada L2 file")
-            found = int(file.attrs["format_version"])
-            if found != FORMAT_VERSION:
-                raise ValueError(
-                    f"{os.fspath(path)} has format version {found}; this enchilada "
-                    f"reads version {FORMAT_VERSION}"
-                )
             return cls(file, observed_data=observed_data, owns_file=True)
         except Exception:
             file.close()
             raise
 
     def close(self) -> None:
-        """Close a file this view opened; a Wheel-owned file is left alone."""
+        """Close the file if `open` made this view; a borrowed handle stays open.
+
+        `wheel.l2` borrows the Wheel's handle; `wheel.close()` closes it.
+        """
         if self._owns_file and self._file:
             self._file.close()
 
@@ -485,45 +532,72 @@ class L2Data:
         """Committed complete cycles; the file holds steps 0 to num_steps."""
         return int(self._require_open().attrs["num_steps"])
 
+    def _listed(self) -> list[tuple[str, Any]]:
+        """(name, group) of every complete block group, in registration order.
+
+        A group with no entries is a writer killed inside `add_block`; it is not
+        a block.
+        """
+        blocks = self._require_open()["blocks"]
+        found = [
+            (int(group.attrs["index"]), name, group)
+            for name, group in blocks.items()
+            if int(group.attrs["num_entries"]) >= 1
+        ]
+        return [(name, group) for _, name, group in sorted(found, key=lambda t: t[0])]
+
     @property
     def block_names(self) -> tuple[str, ...]:
         """Recorded blocks in registration order."""
-        blocks = self._require_open()["blocks"]
-        return tuple(
-            name
-            for _, name in sorted(
-                (int(group.attrs["index"]), name) for name, group in blocks.items()
-            )
-        )
+        return tuple(name for name, _ in self._listed())
 
     @property
     def observation_grid(self) -> Grid:
+        """The grid of the observation the campaign ran on."""
         return _grid_from_attrs(self._require_open()["observation"].attrs)
 
     @property
     def channel_names(self) -> tuple[str, ...]:
+        """The observation's channel names, in order."""
         names = self._require_open()["observation"].attrs["channel_names"]
         return tuple(str(name) for name in names)
 
-    def _group(self, name: str) -> Any:
+    def _block(self, name: str) -> _BlockInfo:
+        """Read a block's group attributes once."""
         blocks = self._require_open()["blocks"]
-        if name not in blocks:
+        group = blocks[name] if name in blocks else None
+        if group is None or int(group.attrs["num_entries"]) < 1:
             raise ValueError(
                 f"unknown block {name!r}; recorded: {list(self.block_names)}"
             )
-        return blocks[name]
+        first = int(group.attrs["first_step"])
+        # num_steps bounds every block: an entry a failed step wrote ahead of the
+        # committed step counter is not data.
+        count = min(int(group.attrs["num_entries"]), self.num_steps - first + 1)
+        return _BlockInfo(group, _Schema.read(group.attrs), first, count)
 
-    def role(self, name: str) -> str:
+    @staticmethod
+    def _role_of(group: Any, name: str) -> Role:
+        value = str(group.attrs["role"])
+        if value not in ("signal", "noise"):
+            raise ValueError(
+                f"block {name!r} has an unknown role {value!r} in the file"
+            )
+        return cast("Role", value)
+
+    def role(self, name: str) -> Role:
         """`"signal"` or `"noise"`."""
-        return str(self._group(name).attrs["role"])
+        return self._role_of(self._block(name).group, name)
 
     def first_step(self, name: str) -> int:
         """The step at which the block was registered; its entry 0 is that state."""
-        return int(self._group(name).attrs["first_step"])
+        return self._block(name).first_step
 
     def block_grid(self, name: str) -> Grid:
         """The grid the block was registered on and renders on."""
-        return _block_grid_from_attrs(self._group(name).attrs, self.observation_grid)
+        return _block_grid_from_attrs(
+            self._block(name).group.attrs, self.observation_grid
+        )
 
     # ---- entries ---------------------------------------------------------------
 
@@ -534,68 +608,91 @@ class L2Data:
         resolved = int(step) + (num_steps + 1 if step < 0 else 0)
         if not 0 <= resolved <= num_steps:
             raise IndexError(
-                f"step {step} is out of range; the file holds steps 0 to {num_steps}"
+                f"step {step} is out of range; the file holds steps 0 to {num_steps} "
+                f"(or {-(num_steps + 1)} to -1)"
             )
         return resolved
 
-    def _entry_index(self, name: str, resolved_step: int) -> int:
-        first = self.first_step(name)
-        if resolved_step < first:
+    @staticmethod
+    def _entry_index(name: str, info: _BlockInfo, resolved_step: int) -> int:
+        if resolved_step < info.first_step:
             raise ValueError(
-                f"block {name!r} was registered at step {first}; it has no state at "
-                f"step {resolved_step}"
+                f"block {name!r} was registered at step {info.first_step}; it has no "
+                f"state at step {resolved_step}"
             )
-        return resolved_step - first
+        index = resolved_step - info.first_step
+        if index >= info.count:
+            raise ValueError(
+                f"block {name!r} has no recorded entry at step {resolved_step}"
+            )
+        return index
 
     @staticmethod
-    def _schema(group: Any) -> _Schema:
-        return _Schema.read(group.attrs)
+    def _shape_table(info: _BlockInfo) -> np.ndarray | None:
+        """The bounded `(count, sum(ndims))` shapes table, None when it is empty."""
+        if sum(info.schema.ndims) == 0:
+            return None
+        return np.asarray(info.group["shapes"][: info.count], dtype=np.int64)
 
-    def _key_layout(self, name: str, key: str) -> tuple[Any, np.ndarray, np.ndarray]:
+    def _key_layout(
+        self,
+        info: _BlockInfo,
+        name: str,
+        key: str,
+        table: np.ndarray | None,
+    ) -> tuple[Any, np.ndarray, np.ndarray]:
         """The key's packed dataset, entry shapes (n, ndim) and offsets (n + 1,)."""
-        group = self._group(name)
-        schema = self._schema(group)
+        schema = info.schema
         if key not in schema.keys:
             raise ValueError(
                 f"block {name!r} has no parameter {key!r}; "
                 f"recorded: {list(schema.keys)}"
             )
-        # num_steps bounds every block: an entry a failed step wrote ahead of the
-        # committed step counter is not data.
-        count = min(
-            int(group.attrs["num_entries"]),
-            self.num_steps - int(group.attrs["first_step"]) + 1,
-        )
         position = schema.keys.index(key)
         ndim = schema.ndims[position]
-        if ndim == 0:
-            shapes = np.zeros((count, 0), dtype=np.int64)
+        if ndim == 0 or table is None:
+            shapes = np.zeros((info.count, 0), dtype=np.int64)
         else:
             column = sum(schema.ndims[:position])
-            shapes = np.asarray(
-                group["shapes"][:count, column : column + ndim], dtype=np.int64
-            )
+            shapes = table[:, column : column + ndim]
         sizes = np.prod(shapes, axis=1, dtype=np.int64)
         offsets = np.concatenate([np.zeros(1, dtype=np.int64), np.cumsum(sizes)])
-        return group["parameters"][key], shapes, offsets
+        return info.group["parameters"][key], shapes, offsets
 
     @staticmethod
-    def _value(
-        flat: np.ndarray, shapes: np.ndarray, offsets: np.ndarray, index: int
-    ) -> Any:
-        if shapes.shape[1] == 0:
-            return flat[offsets[index]]
-        return flat[offsets[index] : offsets[index + 1]].reshape(tuple(shapes[index]))
+    def _value(piece: np.ndarray, shape: np.ndarray) -> Any:
+        """One entry from its packed values and its shape (empty for a scalar key)."""
+        if len(shape) == 0:
+            return piece[0]
+        return piece.reshape(tuple(shape))
 
     def entries(self, name: str, key: str) -> list[Any]:
-        """Every recorded value of one parameter, a list in step order."""
-        dataset, shapes, offsets = self._key_layout(name, key)
+        """Every recorded value of one parameter, a list in step order.
+
+        Entry i is step `first_step(name) + i`; arrays, or numpy scalars for a
+        scalar key.
+        """
+        info = self._block(name)
+        dataset, shapes, offsets = self._key_layout(
+            info, name, key, self._shape_table(info)
+        )
         flat = dataset[: offsets[-1]]
-        return [self._value(flat, shapes, offsets, i) for i in range(shapes.shape[0])]
+        return [
+            self._value(flat[offsets[i] : offsets[i + 1]], shapes[i])
+            for i in range(shapes.shape[0])
+        ]
 
     def chain(self, name: str, key: str) -> np.ndarray:
-        """One dense array `(num_entries, *shape)` of a parameter with a fixed shape."""
-        dataset, shapes, offsets = self._key_layout(name, key)
+        """A fixed-shape parameter's values as one array `(entries, *shape)`.
+
+        Row i is step `first_step(name) + i`, so a late block's rows do not line
+        up with an earlier block's. ValueError when the shape changes between
+        entries (use `entries`).
+        """
+        info = self._block(name)
+        dataset, shapes, offsets = self._key_layout(
+            info, name, key, self._shape_table(info)
+        )
         count = shapes.shape[0]
         if count and not (shapes == shapes[0]).all():
             raise ValueError(
@@ -606,25 +703,27 @@ class L2Data:
         return flat.reshape((count, *(tuple(shapes[0]) if count else ())))
 
     def parameters(self, name: str, step: int = -1) -> dict[str, Any]:
-        """A block's parameter set at `step`: numpy scalars and arrays."""
-        index = self._entry_index(name, self._resolve_step(step))
-        return self._parameters_at(name, index)
+        """A block's parameter set at `step`, a fresh dict in the recorded key order.
 
-    def _parameters_at(self, name: str, index: int) -> dict[str, Any]:
+        Scalar keys are numpy scalars, the rest arrays of their recorded shape.
+        """
+        resolved = self._resolve_step(step)
+        info = self._block(name)
+        return self._parameters_at(info, name, self._entry_index(name, info, resolved))
+
+    def _parameters_at(self, info: _BlockInfo, name: str, index: int) -> dict[str, Any]:
+        table = self._shape_table(info)
         result: dict[str, Any] = {}
-        for key in self._schema(self._group(name)).keys:
-            dataset, shapes, offsets = self._key_layout(name, key)
-            flat = dataset[offsets[index] : offsets[index + 1]]
-            result[key] = (
-                flat[0] if shapes.shape[1] == 0 else flat.reshape(tuple(shapes[index]))
-            )
+        for key in info.schema.keys:
+            dataset, shapes, offsets = self._key_layout(info, name, key, table)
+            piece = dataset[offsets[index] : offsets[index + 1]]
+            result[key] = self._value(piece, shapes[index])
         return result
 
     # ---- rebuilding --------------------------------------------------------------
 
-    def _zero_observation(self) -> L1Data:
-        attrs = self._require_open()["observation"].attrs
-        grid = self.observation_grid
+    def _zero_reference(self, grid: Grid, attrs: Any) -> L1Data:
+        """A reference on `grid` with zero-valued channels and the file's metadata."""
         dtype = np.complex128 if grid.data_domain == "frequency" else np.float64
         return L1Data(
             {name: np.zeros(grid.channel_shape, dtype) for name in self.channel_names},
@@ -637,101 +736,173 @@ class L2Data:
             data_domain=grid.data_domain,
         )
 
-    def _reference(self, name: str) -> L1Data:
-        observed = (
-            self._observed if self._observed is not None else self._zero_observation()
-        )
-        return _data_on_grid(observed, self.block_grid(name))
-
-    def _named(self, blocks: Iterable[Block]) -> dict[str, Block]:
+    @staticmethod
+    def _named(blocks: Iterable[Block], caller: str) -> dict[str, Block]:
         named: dict[str, Block] = {}
         for block in blocks:
+            if isinstance(block, str):
+                raise TypeError(
+                    f"{caller} takes Block objects, not names: each block's "
+                    "state_from_parameters rebuilds its state"
+                )
             if block.name in named:
                 raise ValueError(f"blocks have repeated names: {block.name!r}")
             named[block.name] = block
+        return named
+
+    def _check_known(self, named: dict[str, Block]) -> None:
         recorded = self.block_names
         unknown = [name for name in named if name not in recorded]
         if unknown:
             raise ValueError(f"unknown blocks {unknown}; recorded: {list(recorded)}")
-        return named
 
-    def states(self, step: int, blocks: Iterable[Block]) -> dict[str, BlockState]:
-        """Each given block's state at `step`, rebuilt on the observation grid."""
-        resolved = self._resolve_step(step)
-        named = self._named(blocks)
+    def _rebuild(self, resolved: int, named: dict[str, Block]) -> dict[str, BlockState]:
+        """Rebuild each block's state at the resolved step, in the order given."""
+        self._check_known(named)
+        observation_grid = self.observation_grid
+        obs_attrs = self._require_open()["observation"].attrs
+        # Resolve every block before rebuilding any: a late block fails first.
+        infos: dict[str, tuple[_BlockInfo, int]] = {}
+        for name in named:
+            info = self._block(name)
+            infos[name] = (info, self._entry_index(name, info, resolved))
+        references: dict[Grid, L1Data] = {}
         result: dict[str, BlockState] = {}
         for name, block in named.items():
-            index = self._entry_index(name, resolved)
-            reference = self._reference(name)
-            state = block.state_from_parameters(
-                self._parameters_at(name, index), reference
-            )
-            if not isinstance(state, BlockState):
-                raise TypeError(
-                    f"{name}.state_from_parameters must return a BlockState, got "
-                    f"{type(state).__name__}"
+            info, index = infos[name]
+            grid = _block_grid_from_attrs(info.group.attrs, observation_grid)
+            if grid not in references:
+                references[grid] = (
+                    _data_on_grid(self._observed, grid)
+                    if self._observed is not None
+                    else self._zero_reference(grid, obs_attrs)
                 )
-            if state.template is not None:
+            reference = references[grid]
+            parameters = self._parameters_at(info, name, index)
+            try:
+                rebuilt = block.state_from_parameters(parameters, reference)
+            except Exception as error:
+                error.add_note(
+                    f"while L2Data rebuilt {name!r} at step {resolved}; attach "
+                    "observed_data if the block needs the orbit"
+                )
+                raise
+            label = f"{name}.state_from_parameters"
+            if not isinstance(rebuilt, BlockState):
+                raise TypeError(
+                    f"{label} must return a BlockState, got {type(rebuilt).__name__}"
+                )
+            self._check_role(
+                label, name, self._role_of(info.group, name), rebuilt, resolved
+            )
+            if rebuilt.template is not None:
                 check_on_grid(
-                    state.template,
+                    rebuilt.template,
                     channel_names=reference.channel_names,
                     num_time_samples=reference.num_time_samples,
                     data_domain=reference.data_domain,
                     wdm_grid=reference.wdm_grid,
-                    context_label=f"{name}.state_from_parameters template",
+                    context_label=f"{label} template",
                 )
             result[name] = _state_on_grid(
-                state, self.observation_grid, reference_data=reference
+                rebuilt, observation_grid, reference_data=reference
             )
         return result
 
-    def _recorded_with_role(self, role: str, resolved_step: int) -> list[str]:
-        return [
-            name
-            for name in self.block_names
-            if self.role(name) == role and self.first_step(name) <= resolved_step
-        ]
+    @staticmethod
+    def _check_role(
+        label: str, name: str, role: Role, state: BlockState, step: int
+    ) -> None:
+        """The Wheel's role rules, applied to a rebuilt state."""
+        if role == "signal":
+            if state.covariance is not None:
+                raise ValueError(
+                    f"{label} returned a covariance but {name!r} is registered as a "
+                    f"signal block (rebuilding step {step})"
+                )
+        else:
+            if state.template is not None:
+                raise ValueError(
+                    f"{label} returned a template but {name!r} is registered as a "
+                    f"noise block (rebuilding step {step})"
+                )
+            if state.covariance is None:
+                raise ValueError(
+                    f"{label} must return a covariance because {name!r} is "
+                    f"registered as a noise block (rebuilding step {step})"
+                )
 
-    def covariance(self, step: int, blocks: Iterable[Block]) -> Covariance | None:
-        """The sum of the noise blocks' covariances at `step`; None without any."""
+    def states(self, step: int, blocks: Iterable[Block]) -> dict[str, BlockState]:
+        """Each given block's state at `step`, keyed by name in the order given.
+
+        The block's `state_from_parameters` rebuilds it on its registered grid;
+        the template then moves to the observation grid as the Wheel's does, and
+        a covariance keeps the grid it was published on. Every block in `blocks`
+        must be recorded at `step`.
+        """
         resolved = self._resolve_step(step)
-        named = self._named(blocks)
-        needed = self._recorded_with_role("noise", resolved)
+        return self._rebuild(resolved, self._named(blocks, "states"))
+
+    def _required(
+        self,
+        what: str,
+        role: Role,
+        resolved: int,
+        named: dict[str, Block],
+    ) -> dict[str, Block]:
+        """The given blocks of `role` recorded at the step; all of them are needed."""
+        needed = [
+            name
+            for name, group in self._listed()
+            if group.attrs["role"] == role
+            and int(group.attrs["first_step"]) <= resolved
+        ]
         missing = [name for name in needed if name not in named]
         if missing:
             raise ValueError(
-                f"covariance at step {resolved} needs every noise block recorded "
+                f"{what} at step {resolved} needs every {role} block recorded "
                 f"there; missing {missing}"
             )
+        return {name: named[name] for name in needed}
+
+    def covariance(self, step: int, blocks: Iterable[Block]) -> Covariance | None:
+        """The sum of the noise blocks' covariances at `step`.
+
+        Every noise block recorded at `step` must be in `blocks`; signal blocks
+        and blocks not yet registered are ignored. None when no noise block is
+        recorded at `step`.
+        """
+        resolved = self._resolve_step(step)
+        named = self._named(blocks, "covariance")
+        self._check_known(named)
+        needed = self._required("covariance", "noise", resolved, named)
         total: Covariance | None = None
-        for name, state in self.states(
-            resolved, [named[name] for name in needed]
-        ).items():
-            assert state.covariance is not None, name
-            total = state.covariance if total is None else total + state.covariance
+        for state in self._rebuild(resolved, needed).values():
+            # A noise rebuild always carries one: `_check_role` enforced it.
+            covariance = cast(Covariance, state.covariance)
+            total = covariance if total is None else total + covariance
         return total
 
     def residual(self, step: int, blocks: Iterable[Block]) -> L1Data:
-        """The observation minus every signal block's rebuilt template at `step`."""
+        """The observation minus every signal block's rebuilt template at `step`.
+
+        Needs `observed_data`. Every signal block recorded at `step` must be in
+        `blocks`; noise blocks and blocks not yet registered are ignored.
+        """
         if self._observed is None:
             raise ValueError(
                 "no observed data attached; pass observed_data to L2Data.open"
             )
         resolved = self._resolve_step(step)
-        named = self._named(blocks)
-        needed = self._recorded_with_role("signal", resolved)
-        missing = [name for name in needed if name not in named]
-        if missing:
-            raise ValueError(
-                f"residual at step {resolved} needs every signal block recorded "
-                f"there; missing {missing}"
-            )
+        named = self._named(blocks, "residual")
+        self._check_known(named)
+        needed = self._required("residual", "signal", resolved, named)
         channel_data = {
             name: array.copy() for name, array in self._observed.channel_data.items()
         }
-        for state in self.states(resolved, [named[name] for name in needed]).values():
+        for state in self._rebuild(resolved, needed).values():
             if state.template is None:
                 continue
-            for name in channel_data:
-                channel_data[name] = channel_data[name] - state.template[name]
+            for name, array in channel_data.items():
+                array -= state.template[name]
         return replace(self._observed, channel_data=channel_data)

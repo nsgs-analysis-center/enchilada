@@ -1,6 +1,7 @@
 """The campaign output file: the recorder, the reader and the Wheel that writes it."""
 
 import re
+from dataclasses import replace
 
 import h5py
 import numpy as np
@@ -609,12 +610,9 @@ class TestL2Data:
                 l2.chain("a", "amplitude"), [1.0, 1.5, 2.0, 2.5]
             )
             np.testing.assert_array_equal(l2.chain("late", "variance"), [2.0, 3.0])
-            assert [float(v) for v in l2.entries("a", "amplitude")] == [
-                1.0,
-                1.5,
-                2.0,
-                2.5,
-            ]
+            np.testing.assert_array_equal(
+                l2.entries("a", "amplitude"), [1.0, 1.5, 2.0, 2.5]
+            )
             with pytest.raises(
                 IndexError, match="step 4 is out of range; the file holds steps 0 to 3"
             ):
@@ -709,9 +707,8 @@ class TestL2Data:
         self, tmp_path, observed
     ):
         path, a, late = written_file(tmp_path, observed)
-        with L2Data.open(
-            path
-        ) as l2:  # no observed data: states and covariance still work
+        # No observed data: states and covariance still work.
+        with L2Data.open(path) as l2:
             states = l2.states(3, [a, late])
             np.testing.assert_array_equal(states["a"].template["A"], 2.5)
             assert states["late"].template is None
@@ -786,3 +783,192 @@ class TestL2Data:
                 l2.states(0, [Wrong("a", 1.0)])
             with pytest.raises(ValueError, match="length 3, expected 64"):
                 l2.states(0, [OffGrid("a", 1.0)])
+
+
+class Raises(Amplitude):
+    def state_from_parameters(self, parameters, reference_data):
+        raise RuntimeError("needs an orbit")
+
+
+class NoiseWithTemplate(Level):
+    def state_from_parameters(self, parameters, reference_data):
+        state = super().state_from_parameters(parameters, reference_data)
+        return replace(
+            state, template={ch: 0 * v for ch, v in reference_data.channel_data.items()}
+        )
+
+
+class NoiseBare(Level):
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(parameters={"variance": 1.0})
+
+
+class SignalWithCovariance(Amplitude):
+    def state_from_parameters(self, parameters, reference_data):
+        state = super().state_from_parameters(parameters, reference_data)
+        return replace(state, covariance=white_covariance(reference_data, 1.0))
+
+
+def two_noise_file(tmp_path, observed):
+    rec = recorder(tmp_path, observed, "two.h5")
+    for index, (name, variance) in enumerate((("n1", 2.0), ("n2", 5.0))):
+        rec.add_block(
+            name,
+            role="noise",
+            index=index,
+            grid=observed.grid,
+            encoded=rec.encode(
+                name, "initial_sample", {"variance": variance}, registering=True
+            ),
+        )
+    rec.close()
+    return tmp_path / "two.h5"
+
+
+class TestL2DataReview:
+    def test_two_noise_blocks_sum(self, tmp_path, observed):
+        path = two_noise_file(tmp_path, observed)
+        n1, n2 = Level("n1", 2.0), Level("n2", 5.0)
+        with L2Data.open(path) as l2:
+            total = l2.covariance(0, [n1, n2])
+            states = l2.states(0, [n2, n1])
+            assert list(states) == ["n2", "n1"]
+            expected = states["n1"].covariance + states["n2"].covariance
+            np.testing.assert_array_equal(total.blocks, expected.blocks)
+            np.testing.assert_array_equal(total.A, 7.0)
+
+    def test_format_version_is_refused(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        with h5py.File(path, "r+") as file:
+            file.attrs["format_version"] = 2
+        with pytest.raises(
+            ValueError, match="has format version 2; this enchilada reads version 1"
+        ):
+            L2Data.open(path)
+
+    def test_role_rules_on_rebuilt_states(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            with pytest.raises(ValueError, match="returned a template but 'late'"):
+                l2.states(3, [NoiseWithTemplate("late", 2.0)])
+            with pytest.raises(ValueError, match="returned a covariance but 'a'"):
+                l2.states(3, [SignalWithCovariance("a", 1.0)])
+            with pytest.raises(
+                ValueError, match="must return a covariance because 'late'"
+            ):
+                l2.states(3, [NoiseBare("late", 1.0)])
+
+    def test_a_raising_rebuild_gains_a_note(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            with pytest.raises(RuntimeError, match="needs an orbit") as info:
+                l2.states(1, [Raises("a", 1.0)])
+        assert any(
+            "while L2Data rebuilt 'a' at step 1; attach observed_data" in note
+            for note in info.value.__notes__
+        )
+
+    def test_names_are_refused(self, tmp_path, observed):
+        path, a, _ = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            with pytest.raises(TypeError, match="Block objects, not names"):
+                l2.states(0, ["a"])
+            with pytest.raises(TypeError, match="Block objects, not names"):
+                l2.covariance(0, ["a"])
+
+    def test_a_late_block_fails_before_earlier_rebuilds(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+        calls = []
+
+        class Spy(Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                calls.append(1)
+                return super().state_from_parameters(parameters, reference_data)
+
+        with L2Data.open(path) as l2:
+            with pytest.raises(ValueError, match="registered at step 2"):
+                l2.states(1, [Spy("a", 1.0), late])
+        assert calls == []
+
+    def test_registration_order_follows_index_not_name(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        for index, name in enumerate(("zeta", "alpha")):
+            rec.add_block(
+                name,
+                role="signal",
+                index=index,
+                grid=observed.grid,
+                encoded=rec.encode(
+                    name, "initial_sample", {"amplitude": 1.0}, registering=True
+                ),
+            )
+        rec.close()
+        with L2Data.open(tmp_path / "campaign.h5") as l2:
+            assert l2.block_names == ("zeta", "alpha")
+
+    def test_chain_of_a_fixed_shape_array(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        rec.add_block(
+            "m",
+            role="signal",
+            index=0,
+            grid=observed.grid,
+            encoded=rec.encode(
+                "m",
+                "initial_sample",
+                {"w": np.arange(6.0).reshape(2, 3)},
+                registering=True,
+            ),
+        )
+        rec.append_step(
+            {"m": rec.encode("m", "sample", {"w": np.ones((2, 3))}, registering=False)}
+        )
+        rec.close()
+        with L2Data.open(tmp_path / "campaign.h5") as l2:
+            assert l2.chain("m", "w").shape == (2, 2, 3)
+            np.testing.assert_array_equal(
+                l2.parameters("m", 0)["w"], np.arange(6.0).reshape(2, 3)
+            )
+
+    def test_states_keep_the_order_given(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            assert list(l2.states(3, [late, a])) == ["late", "a"]
+
+    def test_a_step_must_be_an_integer(self, tmp_path, observed):
+        path, a, _ = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            with pytest.raises(TypeError, match="step must be an integer"):
+                l2.parameters("a", 1.5)
+            with pytest.raises(TypeError, match="step must be an integer"):
+                l2.states(True, [a])
+
+    def test_a_borrowed_handle_stays_open(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        with h5py.File(path, "r") as file:
+            l2 = L2Data(file, owns_file=False)
+            l2.close()
+            assert l2.num_steps == 3
+            assert file
+        with pytest.raises(ValueError, match="is not an enchilada L2 file"):
+            with h5py.File(tmp_path / "other.h5", "w") as other:
+                L2Data(other)
+
+    def test_observed_data_metadata_must_match(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        shifted = replace(observed, start_time_gps=10.0)
+        with pytest.raises(
+            ValueError, match=r"start_time_gps 10\.0 does not match the file's 0\.0"
+        ):
+            L2Data.open(path, observed_data=shifted)
+
+    def test_a_group_without_entries_is_not_listed(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        with h5py.File(path, "r+") as file:
+            group = file.create_group("blocks/ghost")
+            group.attrs["index"] = 5
+            group.attrs["num_entries"] = 0
+        with L2Data.open(path) as l2:
+            assert l2.block_names == ("a", "late")
+            with pytest.raises(ValueError, match="unknown block"):
+                l2.role("ghost")

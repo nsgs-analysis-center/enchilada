@@ -106,7 +106,8 @@ def _zeroed(data: L1Data) -> L1Data:
     `state_from_parameters` may read only grid metadata, so the round trip
     hands it a reference whose values would betray a block that reads them:
     `L2Data` rebuilds states from exactly such a reference when no observation
-    is attached, so a rebuild that reads channel values fails here.
+    is attached, so a rebuild that reads channel values fails here. (`L2Data`'s
+    reference also has no orbit; this one keeps the data's.)
     """
     return replace(
         data,
@@ -219,7 +220,8 @@ def check_block(
     the block's ``state_from_parameters`` with the ledger entry's parameters,
     handed over as numpy scalars and arrays as a campaign file returns them, and
     a zero-valued copy of the observation (grid metadata only, as ``L2Data`` does
-    when no observation is attached), so a rebuild that reads channel values fails. It
+    when no observation is attached; ``L2Data``'s copy has no orbit, this one
+    keeps the data's), so a rebuild that reads channel values fails. It
     requires the result to reproduce the published template and covariance to a
     relative 1e-9. After the run it rebuilds the step-0 entry once more, so a
     rebuild that depends on the block's own sampling state fails too. It raises
