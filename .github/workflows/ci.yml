@@ -78,7 +78,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install core only (no extras)
         run: uv sync --no-extra numeric-orbits
-      - name: Test (no coverage gate -- HDF5, lisaorbits, Mojito and notebook tests skip)
+      - name: Test (no coverage gate -- lisaorbits and notebook tests skip)
         run: uv run --no-sync pytest -q
 
   # Install the core at its declared floors without the extras: uv sync would
