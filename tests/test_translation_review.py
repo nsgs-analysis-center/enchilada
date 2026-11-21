@@ -69,16 +69,18 @@ def test_same_grid_block_receives_the_covariance_without_transform(
 ):
     """An explicit domain equal to the observations' hands the covariance over
     as a deep copy; nothing goes through transform()."""
-    import enchilada.wheel
+    import enchilada.translation
 
-    delegate = enchilada.wheel.transform
+    delegate = enchilada.translation.transform
 
     def transform_without_covariance(value, *args, **kwargs):
         if isinstance(value, Covariance):
             raise AssertionError("a same-grid covariance went through transform()")
         return delegate(value, *args, **kwargs)
 
-    monkeypatch.setattr(enchilada.wheel, "transform", transform_without_covariance)
+    monkeypatch.setattr(
+        enchilada.translation, "transform", transform_without_covariance
+    )
     received = []
 
     class RecordCovariance:

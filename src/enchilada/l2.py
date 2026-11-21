@@ -51,7 +51,10 @@ def _enchilada_version() -> str:
 
 
 def _check_hdf5_name(value: str, what: str, kind: str) -> None:
-    """Refuse a block name or parameter key HDF5 cannot take (`kind`: its object)."""
+    """Refuse a name HDF5 cannot take.
+
+    `kind` is "group" for a block name or "dataset" for a parameter key.
+    """
     if "/" in value:
         raise ValueError(
             f"{what} {value!r} contains '/'; it cannot name a {kind} in the output file"
