@@ -1,6 +1,6 @@
 """The boundary between a model's local state and its published estimates."""
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -37,6 +37,9 @@ class Block(Protocol):
     A noise block publishes its complete covariance on every call and never a
     template; Wheel adds the noise blocks' covariances, so each block publishes
     only its own component. A joint model is two blocks.
+    `state_from_parameters` is the inverse of publishing: given a parameter set
+    it rebuilds the state those parameters describe, so the campaign file needs
+    to store parameters only.
 
     Each call, `initial_sample` included, receives independent snapshots of the
     conditional residual, covariance, and current state. Use the supplied RNG;
@@ -81,4 +84,24 @@ class Block(Protocol):
         rng: np.random.Generator,
     ) -> BlockState:
         """Advance the supplied state and return the complete new block state."""
+        ...
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """Rebuild this block's complete physical state from one parameter set.
+
+        The template of a signal block or the covariance of a noise block,
+        with `parameters` echoed on the result, computed from `parameters`,
+        the block's own configuration and the grid metadata of
+        `reference_data` (its domain, sample count, rate, start time, channel
+        names, WDM grid and orbit), never from its channel values, a random
+        stream or the block's own sampling state. `reference_data` is on the
+        block's registered grid, the grid `sample` receives. Values read back
+        from a campaign file arrive as numpy scalars and arrays rather than
+        Python numbers; accept both.
+        `check_block` requires the rebuilt state to match the published one to
+        a relative 1e-9; `L2Data` uses it to turn recorded parameters back
+        into states and residuals. The Wheel never calls it during sampling.
+        """
         ...

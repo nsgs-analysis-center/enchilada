@@ -68,6 +68,24 @@ class SampleOnly:
 
 sample_only: Block = SampleOnly()   # no initial_sample: not a Block
 
+class NoRebuild:
+    name = "no_rebuild"
+
+    def initial_sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None,
+        current_block_state: BlockState, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return current_block_state
+
+no_rebuild: Block = NoRebuild()   # no state_from_parameters: not a Block
+
 @dataclass(frozen=True)
 class FrozenBlock:
     name: str = "frozen"
@@ -145,11 +163,15 @@ def test_consumer_typos_are_static_errors(tmp_path):
         'Incompatible types in assignment (expression has type "SampleOnly", '
         'variable has type "Block")'
     ) in out, out
+    assert (
+        'Incompatible types in assignment (expression has type "NoRebuild", '
+        'variable has type "Block")'
+    ) in out, out
     # ... a misspelt role is a static error ...
     assert 'Argument "role" to "add" of "Wheel" has incompatible type' in out, out
     # ... and the removed warning class is not importable
     assert 'has no attribute "NoiseOverwrittenWarning"' in out, out
-    assert out.count("error:") == 5, out
+    assert out.count("error:") == 6, out
 
 
 @pytest.mark.skipif(
@@ -230,6 +252,17 @@ def test_block_protocol_is_runtime_checkable():
             return current_block_state
 
     assert not isinstance(SampleOnly(), Block)
+
+    class NoRebuild:
+        name = "n"
+
+        def initial_sample(self, conditional_residual, covariance, *, rng):
+            return None
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            return current_block_state
+
+    assert not isinstance(NoRebuild(), Block)
 
 
 def test_frozen_dataclass_can_explicitly_inherit_block():

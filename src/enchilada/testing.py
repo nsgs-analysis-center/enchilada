@@ -1,7 +1,7 @@
 """Helpers for checking the Wheel/Block exchange contract end to end."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -76,6 +76,72 @@ class EchoBlock:
         return BlockState()
 
 
+def _close_enough(actual: np.ndarray, expected: np.ndarray) -> bool:
+    """Relative 1e-9 agreement, scaled by the published array's largest entry."""
+    if actual.shape != expected.shape:
+        return False
+    scale = float(np.max(np.abs(expected))) if expected.size else 0.0
+    return bool(np.allclose(actual, expected, rtol=1e-9, atol=1e-9 * scale))
+
+
+def _zeroed(data: L1Data) -> L1Data:
+    """`data`'s grid with every channel value set to zero.
+
+    `state_from_parameters` may read only grid metadata, so the round trip
+    hands it a reference whose values would betray a block that reads them:
+    `L2Data` rebuilds states from exactly such a reference.
+    """
+    return replace(
+        data,
+        channel_data={
+            name: np.zeros_like(values) for name, values in data.channel_data.items()
+        },
+    )
+
+
+def _check_round_trip(
+    block: Block, entry: BlockState, reference: L1Data, where: str
+) -> None:
+    """Rebuild `entry` from its parameters on `reference` and compare the two."""
+    rebuilt = block.state_from_parameters(entry.parameters, reference)
+    if not isinstance(rebuilt, BlockState):
+        raise TypeError(
+            f"{block.name}.state_from_parameters must return a BlockState, got "
+            f"{type(rebuilt).__name__}"
+        )
+    published, again = entry.template, rebuilt.template
+    if (published is None) != (again is None) or (
+        published is not None and again is not None and set(published) != set(again)
+    ):
+        raise ValueError(
+            f"{block.name}.state_from_parameters does not reproduce the published "
+            f"template at {where} (the channels differ): parameters must "
+            "determine the template"
+        )
+    if published is not None and again is not None:
+        for channel in published:
+            if not _close_enough(np.asarray(again[channel]), published[channel]):
+                raise ValueError(
+                    f"{block.name}.state_from_parameters does not reproduce the "
+                    f"published template in channel {channel!r} at {where}: "
+                    "parameters must determine the template"
+                )
+    noise, noise_again = entry.covariance, rebuilt.covariance
+    if (noise is None) != (noise_again is None) or (
+        noise is not None
+        and noise_again is not None
+        and (
+            noise_again.channel_names != noise.channel_names
+            or noise_again.grid != noise.grid
+            or not _close_enough(noise_again.blocks, noise.blocks)
+        )
+    ):
+        raise ValueError(
+            f"{block.name}.state_from_parameters does not reproduce the published "
+            f"covariance at {where}: parameters must determine the covariance"
+        )
+
+
 def check_block(
     block_under_test: Block,
     observed_data: L1Data,
@@ -92,7 +158,15 @@ def check_block(
     on the observation grid, then calls ``sample`` for ``num_cycles``, passing
     accepted state into each call. Wheel validates the start and every sample
     alike: the signal grid, finiteness, the role's rules and any published
-    Covariance.
+    Covariance. After registration (step 0) and after every cycle it also calls
+    the block's ``state_from_parameters`` with the ledger entry's parameters and
+    a zero-valued copy of the observation (grid metadata only, which is what
+    ``L2Data`` supplies) and requires the result to reproduce the published
+    template and covariance to a relative 1e-9. After the run it rebuilds the
+    step-0 entry once more, so a rebuild that reads the block's own state
+    instead of the parameters is caught as well. Otherwise it raises
+    ``ValueError`` naming the block, the step and the channel: the published
+    parameters must determine the published state.
 
     Args:
         block_under_test: Configured block whose exchange contract is checked.
@@ -119,7 +193,22 @@ def check_block(
     ``observed_data``'s grid.
     """
     wheel = Wheel(observed_data=observed_data, random_seed=random_seed)
+    reference = _zeroed(observed_data)
     for noise_block in noise_blocks:
         wheel.add(block_to_register=noise_block, role="noise")
     wheel.add(block_to_register=block_under_test, role=role)
-    wheel.run(num_cycles=num_cycles)
+    first_entry = wheel.ledger[block_under_test.name]
+    _check_round_trip(block_under_test, first_entry, reference, "step 0")
+
+    def verify(cycle_index: int, campaign: Wheel) -> None:
+        entry = campaign.ledger[block_under_test.name]
+        _check_round_trip(block_under_test, entry, reference, f"step {cycle_index + 1}")
+
+    wheel.run(num_cycles=num_cycles, on_cycle_complete=verify)
+    _check_round_trip(
+        block_under_test,
+        first_entry,
+        reference,
+        f"step 0 after {num_cycles} cycles "
+        "(the rebuild must not read the block's own state)",
+    )

@@ -1,5 +1,7 @@
 """enchilada.testing: EchoBlock and the check_block conformance helper."""
 
+import re
+
 import numpy as np
 import pytest
 
@@ -281,3 +283,163 @@ def test_echo_continuation_belongs_to_each_block_instance(observed, rng):
     assert start.covariance is None
     assert start.parameters == {}
     assert echo.state.num_sample_calls == 2
+
+
+class TestRoundTrip:
+    """check_block rebuilds the block under test from its own parameters."""
+
+    def test_rebuilds_after_registration_and_after_every_cycle(self, observed):
+        class Counting(FlatNoiseBlock):
+            calls = 0
+
+            def state_from_parameters(self, parameters, reference_data):
+                type(self).calls += 1
+                return super().state_from_parameters(parameters, reference_data)
+
+        check_block(Counting("noise", 1.0), observed, num_cycles=3, role="noise")
+        assert Counting.calls == 5
+
+    def test_a_template_the_parameters_do_not_determine_is_caught(self, observed):
+        class Doubling:
+            name = "double"
+
+            def _state(self, data, amplitude):
+                return data.block_state(
+                    {
+                        ch: np.full_like(arr, amplitude)
+                        for ch, arr in data.channel_data.items()
+                    },
+                    parameters={"amplitude": amplitude},
+                )
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                return self._state(conditional_residual, 1.0)
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return self._state(conditional_residual, 1.0)
+
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(reference_data, 2 * parameters["amplitude"])
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "double.state_from_parameters does not reproduce the published "
+                "template in channel 'A' at step 0: parameters must determine the "
+                "template"
+            ),
+        ):
+            check_block(Doubling(), observed, role="signal")
+
+    def test_a_covariance_the_parameters_do_not_determine_is_caught_at_its_step(
+        self, observed
+    ):
+        class Drifting(FlatNoiseBlock):
+            """Publishes level + 1 after the first sample but rebuilds the start."""
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return conditional_residual.block_state().with_covariance(
+                    white_covariance(conditional_residual, self.level + 1.0)
+                )
+
+        with pytest.raises(ValueError, match="published covariance at step 1"):
+            check_block(Drifting("noise", 1.0), observed, role="noise")
+
+    def test_the_rebuilt_state_must_be_a_block_state(self, observed):
+        class Wrong(EchoBlock):
+            def state_from_parameters(self, parameters, reference_data):
+                return {}
+
+        with pytest.raises(
+            TypeError, match="state_from_parameters must return a BlockState"
+        ):
+            check_block(Wrong("wrong"), observed, role="signal")
+
+    def test_round_off_is_tolerated(self, observed):
+        class Thirds:
+            name = "thirds"
+
+            def _state(self, data, amplitude):
+                basis = np.arange(data.num_time_samples, dtype=float) / 7.0
+                return data.block_state(
+                    {ch: amplitude * basis for ch in data.channel_names},
+                    parameters={"amplitude": amplitude},
+                )
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                return self._state(conditional_residual, 0.3)
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return self._state(conditional_residual, 0.3)
+
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(
+                    reference_data, (parameters["amplitude"] * 3.0) / 3.0
+                )
+
+        check_block(Thirds(), observed, role="signal")
+
+    def test_a_rebuild_that_reads_the_block_state_is_caught(self, observed):
+        class Remembering:
+            name = "remember"
+
+            def __init__(self):
+                self.amplitude = 1.0
+
+            def _state(self, data):
+                return data.block_state(
+                    {
+                        ch: np.full_like(arr, self.amplitude)
+                        for ch, arr in data.channel_data.items()
+                    },
+                    parameters={"amplitude": self.amplitude},
+                )
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                return self._state(conditional_residual)
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                self.amplitude += 1.0
+                return self._state(conditional_residual)
+
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(reference_data)  # reads self, not parameters
+
+        with pytest.raises(ValueError, match="at step 0 after 2 cycles"):
+            check_block(Remembering(), observed, num_cycles=2, role="signal")
+
+    def test_a_rebuild_that_reads_channel_values_is_caught(self, observed):
+        assert np.any(observed.channel_data["A"])  # or this test could not fail
+
+        class Copying:
+            name = "copy"
+
+            def _state(self, data):
+                return data.block_state(
+                    {ch: np.array(arr) for ch, arr in data.channel_data.items()},
+                    parameters={},
+                )
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                return self._state(conditional_residual)
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return self._state(conditional_residual)
+
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(reference_data)  # copies the reference values
+
+        with pytest.raises(
+            ValueError, match="published template in channel 'A' at step 0"
+        ):
+            check_block(Copying(), observed, role="signal")

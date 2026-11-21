@@ -558,6 +558,35 @@ class TestOnCycle:
 class TestBoundaryGuards:
     """The Wheel refuses returns that would silently corrupt other blocks."""
 
+    def test_missing_state_from_parameters_is_caught_before_initial_sample(
+        self, observed
+    ):
+        calls = []
+
+        class NoRebuild:
+            name = "norebuild"
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                calls.append("initial_sample")
+                return BlockState()
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return current_block_state
+
+        wheel = Wheel(observed)
+        with pytest.raises(TypeError) as excinfo:
+            wheel.add(NoRebuild(), role="signal")
+        assert str(excinfo.value) == (
+            "block 'norebuild' does not implement state_from_parameters; a Block "
+            "needs name, initial_sample(conditional_residual, covariance, *, rng), "
+            "sample(conditional_residual, covariance, current_block_state, *, rng) "
+            "and state_from_parameters(parameters, reference_data)."
+        )
+        assert calls == []
+        assert len(wheel.ledger) == 0
+
     def test_a_signal_block_does_not_disturb_the_noise_model(self, rng):
         """A signal block never publishes a covariance, so the noise sum is
         exactly what the noise blocks published."""

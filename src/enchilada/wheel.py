@@ -18,6 +18,11 @@ from enchilada.translation import _target_grid, transform
 
 Role = Literal["signal", "noise"]
 ROLES: tuple[Role, ...] = ("signal", "noise")
+_BLOCK_MEMBERS = (
+    "a Block needs name, initial_sample(conditional_residual, covariance, *, rng), "
+    "sample(conditional_residual, covariance, current_block_state, *, rng) and "
+    "state_from_parameters(parameters, reference_data)."
+)
 
 
 class Wheel:
@@ -153,8 +158,9 @@ class Wheel:
         role is "signal" or "noise" and is checked before anything else. A
         signal block publishes a template and never a covariance; a noise
         block publishes a covariance on every call and never a template.
-        block_to_register must have a unique name and implement initial_sample
-        and sample. Failed registration leaves the campaign unchanged: an
+        block_to_register must have a unique name and implement initial_sample,
+        sample and state_from_parameters. Failed registration leaves the
+        campaign unchanged: an
         exception from initial_sample, a return that is not a BlockState, an
         off-grid or non-finite template, a field the role forbids or lacks, a
         covariance on another grid than the block's, or a state that cannot be
@@ -212,17 +218,17 @@ class Wheel:
             raise ValueError(f"block name {block_name!r} already registered")
         if not callable(getattr(block_to_register, "sample", None)):
             raise TypeError(
-                f"block {block_name!r} does not implement sample; "
-                "a Block needs name, initial_sample(conditional_residual, "
-                "covariance, *, rng) and sample(conditional_residual, "
-                "covariance, current_block_state, *, rng)."
+                f"block {block_name!r} does not implement sample; {_BLOCK_MEMBERS}"
             )
         if not callable(getattr(block_to_register, "initial_sample", None)):
             raise TypeError(
                 f"block {block_name!r} does not implement initial_sample; "
-                "a Block needs name, initial_sample(conditional_residual, "
-                "covariance, *, rng) and sample(conditional_residual, "
-                "covariance, current_block_state, *, rng)."
+                f"{_BLOCK_MEMBERS}"
+            )
+        if not callable(getattr(block_to_register, "state_from_parameters", None)):
+            raise TypeError(
+                f"block {block_name!r} does not implement state_from_parameters; "
+                f"{_BLOCK_MEMBERS}"
             )
         conditional_residual, covariance = self._block_inputs(
             block_name, block_grid, role=role, registered=False
