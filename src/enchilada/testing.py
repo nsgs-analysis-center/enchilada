@@ -7,12 +7,12 @@ from typing import Any
 
 import numpy as np
 
-from enchilada.block import Block
+from enchilada.block import Block, Role
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.l2 import STORED_DTYPES
-from enchilada.wheel import Role, Wheel
+from enchilada.wheel import Wheel
 
 
 class EchoBlock:

@@ -27,20 +27,17 @@ import os
 from collections.abc import Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import h5py
 import numpy as np
 
-from enchilada.block import Block
+from enchilada.block import ROLES, Block, Role
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid, WDMGrid
 from enchilada.translation import _data_on_grid, _state_on_grid
-
-if TYPE_CHECKING:
-    from enchilada.wheel import Role
 
 FORMAT = "enchilada-l2"
 FORMAT_VERSION = 1
@@ -359,11 +356,11 @@ class _Recorder:
         return _Encoded(schema, values)
 
     def add_block(
-        self, name: str, *, role: str, index: int, grid: Grid, encoded: _Encoded
+        self, name: str, *, role: Role, index: int, grid: Grid, encoded: _Encoded
     ) -> None:
         """Create the block's group and datasets and write its start as entry 0."""
         self._require_writable()
-        if role not in ("signal", "noise"):
+        if role not in ROLES:
             raise ValueError(
                 f"block {name!r} has role {role!r}; it must be 'signal' or 'noise'"
             )
@@ -615,11 +612,10 @@ class L2Data:
     @staticmethod
     def _role_of(group: Any, name: str) -> Role:
         value = str(group.attrs["role"])
-        if value not in ("signal", "noise"):
-            raise ValueError(
-                f"block {name!r} has an unknown role {value!r} in the file"
-            )
-        return cast("Role", value)
+        for role in ROLES:
+            if role == value:
+                return role
+        raise ValueError(f"block {name!r} has an unknown role {value!r} in the file")
 
     def role(self, name: str) -> Role:
         """`"signal"` or `"noise"`."""

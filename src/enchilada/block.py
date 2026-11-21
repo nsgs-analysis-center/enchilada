@@ -1,12 +1,15 @@
 """The boundary between a model's local state and its published estimates."""
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
 from enchilada.block_state import BlockState
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
+
+Role = Literal["signal", "noise"]
+ROLES: tuple[Role, ...] = ("signal", "noise")
 
 
 @runtime_checkable

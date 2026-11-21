@@ -5,12 +5,12 @@ import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
-from typing import Literal, Self
+from typing import Self
 
 import numpy as np
 
 from enchilada._sum_tree import NoiseSum, Signal, SignalSum
-from enchilada.block import Block
+from enchilada.block import ROLES, Block, Role
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
@@ -19,8 +19,6 @@ from enchilada.l2 import L2Data, _Encoded, _Recorder
 from enchilada.ledger import Ledger
 from enchilada.translation import _data_on_grid, _state_on_grid, _target_grid
 
-Role = Literal["signal", "noise"]
-ROLES: tuple[Role, ...] = ("signal", "noise")
 _BLOCK_INTERFACE = (
     "a Block needs name, initial_sample(conditional_residual, covariance, *, rng), "
     "sample(conditional_residual, covariance, current_block_state, *, rng) and "
