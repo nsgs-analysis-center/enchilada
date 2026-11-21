@@ -238,7 +238,8 @@ internal sampler steps. EchoBlock's `state.num_sample_calls` counts calls to
 Published parameters must support deep copying and, when the Wheel records a
 campaign file, be recordable (see [Campaign output](#campaign-output)). Keep
 open files, processes, GPU resources, and sampler history on the block or in an
-external sink, outside `BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
+external sink, outside `BlockState`. A returned `L1Data` is rejected: blocks
+return a `BlockState`.
 
 Every block is registered under a role, `role="signal"` or `role="noise"`,
 and draws or constructs its own start. `Wheel.add` calls the block's
@@ -459,7 +460,8 @@ not select a separate block domain. A signal block that needs a covariance gets
 it from the noise blocks; a noise block under test receives their sum as its
 `covariance`. The random seed configures the test campaign and also drives
 `initial_sample`; the defaults are shown above. Each model must independently
-validate its prior, likelihood, and sampler; see the conjugate example in `examples/toy_fit.py`.
+validate its prior, likelihood, and sampler; see the conjugate example in
+`examples/toy_fit.py`.
 
 ### Forging a new block
 
@@ -473,7 +475,8 @@ block; its README has the steps and the caveats.
 ## Campaign output
 
 Give the Wheel a path and it records the campaign itself: every block's
-parameters at registration (step 0) and after each complete cycle, appended to
+parameters at registration (the block's entry 0, at step `first_step(name)`)
+and after each complete cycle, appended to
 an HDF5 file and flushed, no callback needed. Templates are not stored.
 A block rebuilds its state from its parameters through `state_from_parameters`,
 so the file holds what the fit learned and the blocks hold how to render it.
@@ -483,15 +486,20 @@ with Wheel(observed, random_seed=0, output_path="campaign.h5") as wheel:
     wheel.add(FixedNoiseBlock("noise", covariance), role="noise")
     wheel.add(my_block, role="signal")
     wheel.run(1000)
-    chain = wheel.l2.chain(my_block.name, "amplitude")  # (1001,): start, then cycles
-    latest = wheel.l2.residual(-1, [my_block])  # observation minus every signal block
+    l2 = wheel.l2
+    assert l2 is not None
+    # (1001,): the start, then one row per cycle
+    chain = l2.chain(my_block.name, "amplitude")
+    # the observation minus every signal block
+    latest = l2.residual(-1, [my_block])
 
 from enchilada import L2Data
 
 with L2Data.open("campaign.h5", observed_data=observed) as l2:
     print(l2.num_steps, l2.block_names)
     parameters = l2.parameters(my_block.name, step=500)
-    states = l2.states(500, [my_block])     # {name: BlockState}, templates on the observation grid
+    # {name: BlockState}, templates on the observation grid
+    states = l2.states(500, [my_block])
     residual = l2.residual(500, [my_block])
 ```
 
@@ -502,11 +510,14 @@ step. A state that breaks these rules is refused like an off-grid template and
 changes nothing. Without a path nothing is recorded and parameters need only
 support deep copying.
 
-Steps are global: step 0 holds the starts, and step `s` the state after the
+Steps are global: step 0 holds the starts of the blocks added before the first
+`run`, and step `s` the state after the
 `s`-th complete cycle counted over every `run` call. (`on_cycle_complete`'s
 `cycle_index` restarts at zero each `run`; inside the callback
 `wheel.l2.num_steps` is the step just recorded.) A cycle that fails part-way
-records nothing, and negative steps count back from the latest.
+records nothing, and negative steps count back from the latest. (A block added
+after such a failed cycle draws its start against the in-memory states the file
+never holds, so `residual` at that step is not the residual the block saw.)
 `parameters(name, step)` returns one step as a dict of numpy scalars and arrays
 in the recorded key order. `chain(name, key)` stacks one key into an array of
 shape `(entries, *shape)` and raises `ValueError` if the shape changes;

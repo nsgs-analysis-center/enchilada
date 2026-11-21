@@ -1498,3 +1498,53 @@ class TestWheelRecords:
             wheel.run(1)
         with L2Data.open(path, observed_data=observed) as l2:
             assert l2.block_names == ("a",)
+
+
+class TestL2DataRebuildChecks:
+    def test_a_rebuild_cannot_write_into_the_reference(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+
+        class Writer(Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                reference_data.channel_data["A"][0] = 1.0
+                return super().state_from_parameters(parameters, reference_data)
+
+        before = {ch: v.copy() for ch, v in observed.channel_data.items()}
+        for attached in (None, observed):
+            with L2Data.open(path, observed_data=attached) as l2:
+                with pytest.raises(ValueError, match="read-only"):
+                    l2.states(0, [Writer("a", 1.0)])
+        for ch, values in before.items():
+            np.testing.assert_array_equal(observed.channel_data[ch], values)
+
+    def test_a_rebuilt_covariance_with_other_channels_is_refused(
+        self, tmp_path, observed
+    ):
+        path, _, _ = written_file(tmp_path, observed)
+        two = make_observed(np.random.default_rng(1), channel_names=("A", "E"))
+
+        class TwoChannels(Level):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState(covariance=white_covariance(two, 1.0))
+
+        with L2Data.open(path) as l2:
+            with pytest.raises(
+                ValueError,
+                match=r"late.state_from_parameters covariance channel_names "
+                r"\('A', 'E'\) do not match the data's \('A', 'E', 'T'\)",
+            ):
+                l2.states(3, [TwoChannels("late", 1.0)])
+
+    def test_a_rebuilt_covariance_on_another_grid_is_refused(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        spectral = observed.to_frequency()
+
+        class OtherGrid(Level):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState(covariance=white_covariance(spectral, 1.0))
+
+        with L2Data.open(path) as l2:
+            with pytest.raises(
+                ValueError, match="covariance is on grid .* but the block is registered"
+            ):
+                l2.states(3, [OtherGrid("late", 1.0)])

@@ -17,6 +17,7 @@ from enchilada import (
     transform,
 )
 from enchilada.testing import check_block
+from enchilada.wheel import _BLOCK_INTERFACE
 
 
 @pytest.fixture
@@ -113,8 +114,11 @@ def test_block_without_initial_sample_is_refused(observed):
     assert isinstance(StartingBlock(), Block)
     wheel = Wheel(observed, random_seed=1)
     before = deepcopy(wheel._rng.bit_generator.state)
-    with pytest.raises(TypeError, match="does not implement initial_sample"):
+    with pytest.raises(TypeError) as excinfo:
         wheel.add(SampleOnly(), role="signal")
+    assert str(excinfo.value) == (
+        f"block 'sample_only' does not implement initial_sample; {_BLOCK_INTERFACE}"
+    )
     assert len(wheel.ledger) == 0
     assert wheel._blocks == []
     assert wheel._rng.bit_generator.state == before

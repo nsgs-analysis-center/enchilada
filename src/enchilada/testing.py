@@ -109,12 +109,10 @@ def _zeroed(data: L1Data) -> L1Data:
     is attached, so a rebuild that reads channel values fails here. (`L2Data`'s
     reference also has no orbit; this one keeps the data's.)
     """
-    return replace(
-        data,
-        channel_data={
-            name: np.zeros_like(values) for name, values in data.channel_data.items()
-        },
-    )
+    zeros = {name: np.zeros_like(values) for name, values in data.channel_data.items()}
+    for values in zeros.values():
+        values.flags.writeable = False  # as `L2Data` hands it: a rebuild cannot edit it
+    return replace(data, channel_data=zeros)
 
 
 def _as_read_back(parameters: dict[str, Any]) -> dict[str, Any]:

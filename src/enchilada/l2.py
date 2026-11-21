@@ -458,6 +458,16 @@ class _Recorder:
         group.attrs["num_entries"] = count + 1
 
 
+def _read_only(data: L1Data) -> L1Data:
+    """`data` with read-only views of its channels, so a rebuild cannot edit it."""
+    views = {}
+    for name, values in data.channel_data.items():
+        view = values.view()
+        view.flags.writeable = False
+        views[name] = view
+    return replace(data, channel_data=views)
+
+
 @dataclass(frozen=True)
 class _BlockInfo:
     """One block's group read once: its schema, first step and bounded entry count."""
@@ -813,7 +823,7 @@ class L2Data:
                     if self._observed is not None
                     else self._zero_reference(grid, obs_attrs)
                 )
-            reference = references[grid]
+            reference = _read_only(references[grid])
             parameters = self._parameters_at(info, name, index)
             try:
                 rebuilt = block.state_from_parameters(parameters, reference)
@@ -835,6 +845,10 @@ class L2Data:
             self._check_role(
                 label, name, self._role_of(info.group, name), rebuilt, resolved
             )
+            if rebuilt.covariance is not None:
+                self._check_covariance(
+                    label, rebuilt.covariance, reference, grid, resolved
+                )
             if rebuilt.template is not None:
                 check_on_grid(
                     rebuilt.template,
@@ -848,6 +862,24 @@ class L2Data:
                 rebuilt, observation_grid, reference_data=reference
             )
         return result
+
+    @staticmethod
+    def _check_covariance(
+        label: str, covariance: Covariance, reference: L1Data, grid: Grid, step: int
+    ) -> None:
+        """The Wheel's covariance checks: channel names and the block's grid."""
+        if covariance.channel_names != tuple(reference.channel_names):
+            raise ValueError(
+                f"{label} covariance channel_names {covariance.channel_names} do "
+                f"not match the data's {tuple(reference.channel_names)} "
+                f"(rebuilding step {step})"
+            )
+        if covariance.grid != grid:
+            raise ValueError(
+                f"{label} covariance is on grid {covariance.grid} but the block is "
+                f"registered on grid {grid}; publish the covariance on the grid of "
+                f"the data the block received (rebuilding step {step})"
+            )
 
     @staticmethod
     def _check_role(

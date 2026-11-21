@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 from conftest import const_block_state, make_observed, starting_at, white_covariance
-from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L2Data, Wheel
 from enchilada.testing import EchoBlock
+from enchilada.wheel import _BLOCK_INTERFACE
 
 
 class ConstBlock:
@@ -623,8 +624,11 @@ class TestBoundaryGuards:
         class NoSample:
             name = "nosample"
 
-        with pytest.raises(TypeError, match="does not implement sample"):
+        with pytest.raises(TypeError) as excinfo:
             Wheel(observed).add(NoSample(), role="signal")
+        assert str(excinfo.value) == (
+            f"block 'nosample' does not implement sample; {_BLOCK_INTERFACE}"
+        )
 
     def test_block_with_name_initial_sample_and_sample_can_register(self, observed):
         class Minimal:
@@ -1033,3 +1037,38 @@ class TestObservedDataIsChecked:
         assert type(wheel._noise_sum.total) is Covariance
         assert wheel._noise_sum.total is not compatible
         assert type(wheel.ledger["noise"].covariance) is Covariance
+
+
+class _Poke(EchoBlock):
+    """A rebuild that writes into the reference it is handed."""
+
+    def state_from_parameters(self, parameters, reference_data):
+        reference_data.channel_data["A"][0] = 123.0
+        return super().state_from_parameters(parameters, reference_data)
+
+
+class TestRecordingViews:
+    def test_a_rebuild_cannot_edit_the_wheels_observation(self, observed, tmp_path):
+        with Wheel(observed, output_path=tmp_path / "c.h5") as wheel:
+            block = _Poke("poke")
+            wheel.add(block, role="signal")
+            before = wheel.observed_data
+            assert wheel.l2 is not None
+            with pytest.raises(ValueError, match="read-only"):
+                wheel.l2.states(0, [block])
+            for ch, values in before.channel_data.items():
+                np.testing.assert_array_equal(
+                    wheel.observed_data.channel_data[ch], values
+                )
+
+    def test_a_second_reader_can_open_the_file_while_recording(
+        self, observed, tmp_path
+    ):
+        path = tmp_path / "c.h5"
+        with Wheel(observed, output_path=path) as wheel:
+            wheel.add(EchoBlock("echo"), role="signal")
+            wheel.run(1)
+            with L2Data.open(path) as reader:
+                assert reader.num_steps == 1
+            wheel.run(1)
+            assert wheel.l2 is not None and wheel.l2.num_steps == 2

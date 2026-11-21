@@ -71,8 +71,9 @@ All notable changes to enchilada are documented here. The format follows
   raises `FileExistsError`): every block's parameters at registration and
   after each complete cycle, flushed before `on_cycle_complete`, under a
   global step counter. `wheel.l2` is the live view; `Wheel.close()` or a
-  `with Wheel(...)` block closes the file. Recorded parameters must be numeric with a key set, dtype
-  kind and dimension count fixed at registration; shapes may change per step.
+  `with Wheel(...)` block closes the file. Recorded parameters must be numeric
+  with a key set, dtype kind and dimension count fixed at registration; shapes
+  may change per step.
 - `L2Data`: the read-only view of a campaign file. `L2Data.open(path, *,
   observed_data=None)`; metadata (`num_steps`, `block_names`, `role`,
   `first_step`, `block_grid`); recorded values (`parameters`, `chain`,
@@ -97,7 +98,8 @@ All notable changes to enchilada are documented here. The format follows
   coefficients and covariances are removed. The private `wdm` backend, its
   Python >=3.13 requirement and the `wdm.yml` workflow are gone. The
   `numeric-orbits` and `mojito` extras no longer carry scipy, so `decimate` and
-  `NumericOrbit`'s interpolation need no extra. WDM arrays in the old `(Nf + 1, Nt)` layout are refused
+  `NumericOrbit`'s interpolation need no extra. WDM arrays in the old
+  `(Nf + 1, Nt)` layout are refused
   (`num_frequency_divisions must be a positive even integer, got <Nf + 1>`);
   regenerate them with `transform` from time or frequency data.
 - `Covariance` stores one stacked `(K, K, *channel_shape)` Hermitian array,

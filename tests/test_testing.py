@@ -550,3 +550,48 @@ class TestRoundTrip:
                 return self._state(reference_data, amplitude)
 
         check_block(Popping(), observed, num_cycles=2, role="signal")
+
+
+class TestRoundTripCovarianceBranches:
+    def test_a_rebuild_with_a_covariance_the_published_state_lacks(self, observed):
+        class Extra(_Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                return self._state(
+                    reference_data, parameters["amplitude"]
+                ).with_covariance(white_covariance(reference_data, 1.0))
+
+        with pytest.raises(
+            ValueError, match="the rebuild has one but the published state has none"
+        ):
+            check_block(Extra(), observed, role="signal")
+
+    def test_a_rebuilt_covariance_with_other_channels(self, observed, rng):
+        two = make_observed(rng, channel_names=("A", "E"))
+
+        class TwoChannels(FlatNoiseBlock):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState().with_covariance(white_covariance(two, self.level))
+
+        with pytest.raises(ValueError, match=r"channels \('A', 'E'\) differ"):
+            check_block(TwoChannels("noise", 1.0), observed, role="noise")
+
+    def test_a_rebuilt_covariance_on_another_grid(self, observed):
+        spectral = observed.to_frequency()
+
+        class OtherGrid(FlatNoiseBlock):
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState().with_covariance(
+                    white_covariance(spectral, self.level)
+                )
+
+        with pytest.raises(ValueError, match="grid .* differs from the published"):
+            check_block(OtherGrid("noise", 1.0), observed, role="noise")
+
+    def test_a_rebuild_cannot_write_into_its_reference(self, observed):
+        class Writer(_Amplitude):
+            def state_from_parameters(self, parameters, reference_data):
+                reference_data.channel_data["A"][0] = 1.0
+                return self._state(reference_data, parameters["amplitude"])
+
+        with pytest.raises(ValueError, match="read-only"):
+            check_block(Writer(), observed, role="signal")

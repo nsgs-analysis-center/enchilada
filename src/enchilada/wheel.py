@@ -73,7 +73,9 @@ class Wheel:
     `wheel.l2` reads it live and `L2Data.open` afterwards. Parameters must then
     be recordable (numeric scalars or arrays; key set, dtype kind and dimension
     count fixed at registration; any shape per step); a state that is not is
-    refused like an off-grid template. A partial cycle records nothing. If a
+    refused like an off-grid template. A partial cycle records nothing (a block
+    added after one draws its start against in-memory states the file never
+    holds, so `residual` at that step is not the residual the block saw). If a
     write fails, the campaign in memory is intact and one record ahead, the file
     is consistent up to its last step, and the Wheel refuses further add and
     run. `close()` or a `with` block closes the file.

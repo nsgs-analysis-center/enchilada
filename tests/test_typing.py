@@ -21,7 +21,7 @@ import numpy as np
 from typing import Any, assert_type
 from enchilada import (
     Block, L1Data, Covariance, BlockState, Wheel, WDMGrid, Grid,
-    FixedNoiseBlock, transform,
+    FixedNoiseBlock, L2Data, transform,
 )
 from enchilada.testing import EchoBlock, check_block
 
@@ -45,6 +45,15 @@ assert_type(transform(r, "wdm", num_frequency_divisions=2).wdm_grid, WDMGrid | N
 noise = Covariance.like(r, {"A": np.ones(8)})
 assert_type(noise.copy(), Covariance)
 assert_type(transform(BlockState(), "time"), BlockState)
+recorded = Wheel(r, output_path="campaign.h5")
+live = recorded.l2
+assert live is not None
+assert_type(live.num_steps, int)
+assert_type(live.block_names, tuple[str, ...])
+with L2Data.open("campaign.h5", observed_data=r) as reader:
+    assert_type(reader.parameters("noise"), dict[str, Any])
+    assert_type(reader.chain("noise", "x"), np.ndarray)
+recorded.close()
 wheel = Wheel(r)
 wheel.add(FixedNoiseBlock("noise", noise), role="noise")
 wheel.add(EchoBlock("wdm"), role="signal", data_domain="wdm", num_time_divisions=2)
