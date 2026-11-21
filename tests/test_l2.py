@@ -1034,6 +1034,72 @@ class TestL2DataFollowUps:
         assert "attach observed_data" not in attached.value.__notes__[0]
 
 
+def raw_entries(wheel):
+    """Every block's raw num_entries, which the reader's num_steps bound hides."""
+    blocks = wheel._recorder.file["blocks"]
+    return {name: int(blocks[name].attrs["num_entries"]) for name in blocks}
+
+
+def assert_rebuilds_wheel(wheel, blocks, *, atol=0):
+    """The file's rebuilt states, covariance and residual agree with the Wheel's."""
+    channels = wheel.observed_data.channel_names
+    states = wheel.l2.states(-1, blocks)
+    for block in blocks:
+        entry = wheel.ledger[block.name]
+        if entry.template is None:
+            assert states[block.name].template is None
+        else:
+            for ch in channels:
+                np.testing.assert_allclose(
+                    states[block.name].template[ch], entry.template[ch], atol=atol
+                )
+    rebuilt = wheel.l2.covariance(-1, blocks)
+    if wheel.covariance is None:
+        assert rebuilt is None
+    else:
+        np.testing.assert_allclose(rebuilt.blocks, wheel.covariance.blocks, atol=atol)
+    residual = wheel.l2.residual(-1, blocks)
+    for ch in channels:
+        np.testing.assert_allclose(
+            residual.channel_data[ch],
+            wheel.working_residual.channel_data[ch],
+            atol=atol,
+        )
+
+
+class Draws(Amplitude):
+    """Signal block that draws from its RNG, so a leaked candidate RNG shows."""
+
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+        rng.standard_normal()
+        return super().sample(
+            conditional_residual, covariance, current_block_state, rng=rng
+        )
+
+
+class Relabels(Draws):
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+        state = super().sample(
+            conditional_residual, covariance, current_block_state, rng=rng
+        )
+        state.parameters["label"] = 1.0
+        return state
+
+
+class Counts(Amplitude):
+    """Signal block that counts its sample calls."""
+
+    def __init__(self, name, start):
+        super().__init__(name, start)
+        self.calls = 0
+
+    def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+        self.calls += 1
+        return super().sample(
+            conditional_residual, covariance, current_block_state, rng=rng
+        )
+
+
 class TestWheelRecords:
     def test_without_a_path_nothing_changes(self, observed):
         wheel = Wheel(observed, random_seed=0)
@@ -1056,6 +1122,22 @@ class TestWheelRecords:
         with pytest.raises(FileExistsError):
             Wheel(observed, output_path=path)
         wheel.close()
+
+    def test_a_failure_while_opening_the_view_removes_the_file(
+        self, tmp_path, observed, monkeypatch
+    ):
+        path = tmp_path / "campaign.h5"
+        original = L2Data.__init__
+
+        def refuses(self, *args, **kwargs):
+            raise RuntimeError("no view")
+
+        monkeypatch.setattr(L2Data, "__init__", refuses)
+        with pytest.raises(RuntimeError, match="no view"):
+            Wheel(observed, output_path=path)
+        assert not path.exists()
+        monkeypatch.setattr(L2Data, "__init__", original)
+        Wheel(observed, output_path=path).close()
 
     def test_registration_and_cycles_are_recorded(self, tmp_path, observed):
         with Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5") as wheel:
@@ -1112,10 +1194,10 @@ class TestWheelRecords:
         second.armed = True
         with pytest.raises(RuntimeError, match="boom"):
             wheel.run(1)
-        assert wheel.ledger["first"].parameters == {
-            "amplitude": 2.0
-        }  # committed in memory
+        # committed in memory
+        assert wheel.ledger["first"].parameters == {"amplitude": 2.0}
         assert wheel.l2.num_steps == 1
+        assert raw_entries(wheel) == {"first": 2, "second": 2}
         np.testing.assert_array_equal(wheel.l2.chain("first", "amplitude"), [1.0, 1.5])
         second.armed = False
         wheel.run(1)
@@ -1143,32 +1225,37 @@ class TestWheelRecords:
             wheel.l2.states(1, [late])
         assert wheel.l2.parameters("late", 2) == {"amplitude": 10.0}
 
-    def test_an_unrecordable_state_is_refused_and_changes_nothing(
-        self, tmp_path, observed
-    ):
-        class Relabels(Amplitude):
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                state = super().sample(
-                    conditional_residual, covariance, current_block_state, rng=rng
-                )
-                state.parameters["label"] = 1.0
-                return state
-
+    def test_a_drawing_cycle_advances_the_rng(self, tmp_path, observed):
         wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
-        wheel.add(Relabels("a", 1.0), role="signal")
+        wheel.add(Draws("a", 1.0), role="signal")
+        before = wheel._rng.bit_generator.state
+        wheel.run(1)
+        assert wheel._rng.bit_generator.state != before
+
+    def test_an_unrecordable_sample_changes_nothing(self, tmp_path, observed):
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        wheel.add(Relabels("a", 1.0), role="signal")  # first in the cycle
+        wheel.add(Level("noise", 1.0), role="noise")
         rng_before = wheel._rng.bit_generator.state
         residual_before = wheel.working_residual.channel_data["A"].copy()
+        covariance_before = wheel.covariance.blocks.copy()
+        entries_before = raw_entries(wheel)
         with pytest.raises(ValueError, match="the key set is fixed at registration"):
             wheel.run(1)
         assert wheel.ledger["a"].parameters == {"amplitude": 1.0}
+        assert wheel.ledger["noise"].parameters == {"variance": 1.0}
         assert wheel._rng.bit_generator.state == rng_before
         np.testing.assert_array_equal(
             wheel.working_residual.channel_data["A"], residual_before
         )
+        np.testing.assert_array_equal(wheel.covariance.blocks, covariance_before)
+        assert raw_entries(wheel) == entries_before == {"a": 1, "noise": 1}
         assert wheel.l2.num_steps == 0
         np.testing.assert_array_equal(wheel.l2.chain("a", "amplitude"), [1.0])
+
+    def test_an_unrecordable_start_is_refused_at_registration(self, tmp_path, observed):
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        wheel.add(Amplitude("a", 1.0), role="signal")
 
         class Strings(Amplitude):
             def initial_sample(self, conditional_residual, covariance, *, rng):
@@ -1184,6 +1271,9 @@ class TestWheelRecords:
             wheel.add(Strings("s", 1.0), role="signal")
         assert "s" not in wheel.ledger
         assert wheel.l2.block_names == ("a",)
+        assert raw_entries(wheel) == {"a": 1}
+        wheel.add(Amplitude("s", 1.0), role="signal")
+        assert wheel.l2.block_names == ("a", "s")
 
     def test_a_name_that_cannot_name_a_group_is_refused_before_initial_sample(
         self, tmp_path, observed
@@ -1200,38 +1290,39 @@ class TestWheelRecords:
             ValueError, match=re.escape("block name 'a/b' contains '/'")
         ):
             wheel.add(Loud("a/b", 1.0), role="signal")
+        with pytest.raises(ValueError, match="is not valid UTF-8"):
+            wheel.add(Loud("bad\ud800", 1.0), role="signal")
         assert calls == [] and len(wheel.ledger) == 0
         Wheel(observed).add(Loud("a/b", 1.0), role="signal")  # fine without a file
+        assert calls == [True]
+
+    def test_a_key_that_is_not_utf8_is_refused(self, tmp_path, observed):
+        class BadKey(Amplitude):
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                state = super().initial_sample(
+                    conditional_residual, covariance, rng=rng
+                )
+                state.parameters["bad\ud800"] = 1.0
+                return state
+
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        with pytest.raises(ValueError, match="is not valid UTF-8"):
+            wheel.add(BadKey("k", 1.0), role="signal")
+        assert len(wheel.ledger) == 0
 
     def test_rebuilt_states_match_the_wheel(self, tmp_path, observed):
         with Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5") as wheel:
-            blocks = [
-                Level("noise", 1.0),
-                Amplitude("t", 1.0),
-                Population(),
-            ]
+            blocks = [Level("noise", 1.0), Amplitude("t", 1.0), Population()]
             wheel.add(blocks[0], role="noise")
             wheel.add(blocks[1], role="signal")
             wheel.add(blocks[2], role="signal")
             wheel.run(3)
-            states = wheel.l2.states(-1, blocks)
-            for name in ("noise", "t", "pop"):
-                entry = wheel.ledger[name]
-                if entry.template is None:
-                    assert states[name].template is None
-                else:
-                    for ch in observed.channel_names:
-                        np.testing.assert_allclose(
-                            states[name].template[ch], entry.template[ch]
-                        )
-            np.testing.assert_allclose(
-                wheel.l2.covariance(-1, blocks).blocks, wheel.covariance.blocks
-            )
-            residual = wheel.l2.residual(-1, blocks)
-            for ch in observed.channel_names:
-                np.testing.assert_allclose(
-                    residual.channel_data[ch], wheel.working_residual.channel_data[ch]
-                )
+            assert_rebuilds_wheel(wheel, blocks)
+
+    def test_a_ragged_parameter_keeps_every_entry(self, tmp_path, observed):
+        with Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5") as wheel:
+            wheel.add(Population(), role="signal")
+            wheel.run(3)
             assert [e.shape for e in wheel.l2.entries("pop", "frequencies")] == [
                 (2,),
                 (3,),
@@ -1251,21 +1342,64 @@ class TestWheelRecords:
             assert wheel.l2.block_grid("w").wdm_grid == WDMGrid(
                 num_frequency_divisions=8, num_time_divisions=8
             )
-            states = wheel.l2.states(-1, blocks)
-            for name in ("f", "w"):
-                for ch in observed.channel_names:
-                    np.testing.assert_allclose(
-                        states[name].template[ch],
-                        wheel.ledger[name].template[ch],
-                        atol=1e-12,
-                    )
-            residual = wheel.l2.residual(-1, blocks)
-            for ch in observed.channel_names:
-                np.testing.assert_allclose(
-                    residual.channel_data[ch],
-                    wheel.working_residual.channel_data[ch],
-                    atol=1e-12,
-                )
+            assert_rebuilds_wheel(wheel, blocks, atol=1e-12)
+
+    @pytest.mark.parametrize(
+        ("data_domain", "divisions"),
+        [("frequency", {}), ("wdm", {"num_frequency_divisions": 8})],
+    )
+    def test_a_noise_block_off_the_observation_grid_rebuilds_the_covariance(
+        self, tmp_path, observed, data_domain, divisions
+    ):
+        with Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5") as wheel:
+            blocks = [Level("noise", 1.0), Amplitude("s", 0.5)]
+            wheel.add(blocks[0], role="noise", data_domain=data_domain, **divisions)
+            wheel.add(blocks[1], role="signal", data_domain=data_domain, **divisions)
+            wheel.run(3)
+            assert wheel.covariance.grid != observed.grid
+            assert wheel.l2.covariance(-1, blocks).grid == wheel.covariance.grid
+            assert_rebuilds_wheel(wheel, blocks, atol=1e-12)
+
+    def test_a_failed_write_refuses_the_next_run_before_sampling(
+        self, tmp_path, observed, monkeypatch
+    ):
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        block = Counts("a", 1.0)
+        wheel.add(block, role="signal")
+
+        def full_disk(group, encoded):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_Recorder, "_append_entry", staticmethod(full_disk))
+        with pytest.raises(OSError, match="disk full"):
+            wheel.run(1)
+        monkeypatch.undo()
+        assert wheel.ledger["a"].parameters == {"amplitude": 1.5}  # memory one ahead
+        assert wheel.l2.num_steps == 0
+        assert block.calls == 1
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            wheel.run(1)
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            wheel.add(Amplitude("b", 1.0), role="signal")
+        assert block.calls == 1
+
+    def test_an_add_interrupted_before_the_write_refuses_the_next_run(
+        self, tmp_path, observed, monkeypatch
+    ):
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        block = Counts("a", 1.0)
+        wheel.add(block, role="signal")
+
+        def interrupted(*args, **kwargs):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(_Recorder, "add_block", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            wheel.add(Amplitude("b", 1.0), role="signal")
+        monkeypatch.undo()
+        with pytest.raises(RuntimeError, match="add was interrupted"):
+            wheel.run(1)
+        assert block.calls == 0
 
     def test_close_ends_recording_and_the_file_reopens(self, tmp_path, observed):
         path = tmp_path / "c.h5"
@@ -1278,9 +1412,11 @@ class TestWheelRecords:
         with pytest.raises(ValueError, match="the campaign output file is closed"):
             wheel.run(1)
         with pytest.raises(ValueError, match="the campaign output file is closed"):
+            wheel.run(0)
+        with pytest.raises(ValueError, match="the campaign output file is closed"):
             wheel.add(Amplitude("b", 1.0), role="signal")
         with pytest.raises(ValueError, match="L2Data is closed"):
-            _ = wheel.l2.num_steps
+            wheel.l2.chain("a", "amplitude")
         with L2Data.open(path, observed_data=observed) as l2:
             assert l2.num_steps == 2
             np.testing.assert_array_equal(l2.chain("a", "amplitude"), [1.0, 1.5, 2.0])
@@ -1289,8 +1425,34 @@ class TestWheelRecords:
                 observed.channel_data["A"] - 2.0,
             )
 
+    def test_close_inside_the_callback_stops_the_next_cycle_before_sampling(
+        self, tmp_path, observed
+    ):
+        wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
+        block = Counts("a", 1.0)
+        wheel.add(block, role="signal")
+        with pytest.raises(
+            ValueError,
+            match="the campaign output file is closed; construct a new Wheel",
+        ):
+            wheel.run(3, on_cycle_complete=lambda index, campaign: campaign.close())
+        assert block.calls == 1
+
     def test_the_context_manager_closes(self, tmp_path, observed):
-        with Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5") as wheel:
+        path = tmp_path / "c.h5"
+        with Wheel(observed, random_seed=0, output_path=path) as wheel:
             wheel.add(Amplitude("a", 1.0), role="signal")
-        with pytest.raises(ValueError, match="closed"):
+        with pytest.raises(
+            ValueError,
+            match="the campaign output file is closed; construct a new Wheel",
+        ):
             wheel.run(1)
+
+    def test_the_context_manager_closes_on_an_exception(self, tmp_path, observed):
+        path = tmp_path / "c.h5"
+        with pytest.raises(KeyError):
+            with Wheel(observed, random_seed=0, output_path=path) as wheel:
+                wheel.add(Amplitude("a", 1.0), role="signal")
+                raise KeyError("inside")
+        with L2Data.open(path, observed_data=observed) as l2:
+            assert l2.block_names == ("a",)

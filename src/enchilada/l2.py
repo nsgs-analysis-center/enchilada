@@ -77,6 +77,13 @@ def _check_hdf5_name(value: str, what: str, kind: str) -> None:
         )
     if value in ("", ".", ".."):
         raise ValueError(f"{what} {value!r} cannot name a {kind} in the output file")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(
+            f"{what} {value!r} is not valid UTF-8; it cannot name a {kind} in the "
+            "output file"
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -246,6 +253,31 @@ class _Recorder:
     def close(self) -> None:
         if self._file:
             self._file.close()
+
+    def check_appendable(self, num_registered: int) -> None:
+        """Raise if the recorder cannot take another record.
+
+        That is: the file is closed, an earlier write failed part-way, or a block
+        was adopted by the Wheel but never written (`num_registered` is the
+        Wheel's block count).
+        """
+        if self.closed:
+            raise ValueError(
+                "the campaign output file is closed; construct a new Wheel to record "
+                "another campaign"
+            )
+        self._require_writable()
+        if len(self._schemas) != num_registered:
+            raise RuntimeError(
+                "an earlier add was interrupted after the block was adopted but "
+                "before it was written; construct a new Wheel to record another "
+                "campaign"
+            )
+
+    @staticmethod
+    def check_block_name(name: str) -> None:
+        """Refuse a block name that cannot name a group in the file."""
+        _check_hdf5_name(name, "block name", "group")
 
     def _require_writable(self) -> None:
         if self._failed is not None:
