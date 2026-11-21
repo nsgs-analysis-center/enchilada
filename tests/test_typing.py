@@ -325,6 +325,7 @@ def test_public_surface_is_pinned():
         "NumericOrbit",
         "Orbit",
         "L1Data",
+        "L2Data",
         "BlockState",
         "Wheel",
         "WDMGrid",
