@@ -15,7 +15,7 @@ stored ``A2``/``E2``/``T2`` equal the orthonormal combination of
 ``X2``/``Y2``/``Z2`` that :meth:`enchilada.Covariance.in_basis` uses, so a
 campaign may load either triple.
 
-Imports h5py lazily; the ``mojito`` extra provides it.
+Imports h5py lazily (a core dependency) so importing the module stays cheap.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def load_mojito_l1(
             nonzero ``tdi_flags`` value in the window (enchilada has no gap
             mask).
     """
-    import h5py  # lazy: optional dependency
+    import h5py  # lazy: keeps ``import enchilada`` light
 
     channels = tuple(channels)
     unknown = [name for name in channels if name not in TDI_CHANNELS]

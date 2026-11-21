@@ -11,7 +11,7 @@ accepts in-memory tables. Positions use ecliptic Cartesian metres; loaders rotat
 equatorial input when ``coordinate_frame="equatorial"``.
 
 NumericOrbit interpolates with SciPy, a core dependency; its HDF5 loader
-imports h5py on demand (the ``numeric-orbits`` or ``mojito`` extra).
+imports h5py on demand (a core dependency).
 """
 
 from __future__ import annotations

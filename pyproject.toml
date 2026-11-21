@@ -33,14 +33,14 @@ keywords = [
 dependencies = [
     # domania (the WDM transform) needs numpy>=2.1 and scipy>=1.14.1; scipy is
     # also imported directly by resample.py and orbits.py. The core-minimum CI
-    # lane pins these four floors. domania is capped below 4 because
+    # lane pins these floors and h5py's below. domania is capped below 4 because
     # enchilada's WDM arrays are domania 3's folded layout.
     "numpy>=2.1",
     "scipy>=1.14.1",
     "domania>=3.0,<4",
     # The Wheel writes its campaign output file with h5py. 3.12.1 is lisaorbits'
     # own floor and the first non-yanked release with wheels for 3.12 and 3.13;
-    # Python 3.14 wheels begin at 3.15.0, which the lock resolves to.
+    # Python 3.14 wheels begin at 3.15.0; the lock resolves a newer release.
     "h5py>=3.12.1",
 ]
 

@@ -405,8 +405,11 @@ class _Recorder:
                     del self._file["blocks"][name]
             raise
 
-    def _latch(self, error: BaseException) -> None:
+    def _latch(self, error: BaseException, steps: int | None = None) -> None:
         self._failed = error
+        if steps is not None:
+            self._failed_at_step = steps
+            return
         with contextlib.suppress(Exception):
             self._failed_at_step = int(self._file.attrs["num_steps"])
 
@@ -423,14 +426,17 @@ class _Recorder:
                 raise RuntimeError(
                     f"{name}: the entry was encoded for another block's schema"
                 )
+        # The step count before the append: the in-memory count may run one ahead
+        # of what a failed flush left on disk.
+        steps = int(self._file.attrs["num_steps"])
         try:
             blocks = self._file["blocks"]
             for name, encoded in pending.items():
                 self._append_entry(blocks[name], encoded)
-            self._file.attrs["num_steps"] = int(self._file.attrs["num_steps"]) + 1
+            self._file.attrs["num_steps"] = steps + 1
             self._file.flush()
         except BaseException as error:
-            self._latch(error)
+            self._latch(error, steps)
             raise
 
     @staticmethod

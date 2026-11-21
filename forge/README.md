@@ -29,7 +29,7 @@ this folder assumes you have read it.
 
 ## Setup
 
-From the repository root (`numeric-orbits` brings h5py and, through
+From the repository root (`numeric-orbits` brings, through
 lisaorbits, matplotlib; `examples` brings JupyterLab):
 
 ```sh

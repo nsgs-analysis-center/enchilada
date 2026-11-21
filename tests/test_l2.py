@@ -373,6 +373,33 @@ class TestRecorder:
         with h5py.File(tmp_path / "campaign.h5", "r") as file:
             assert int(file.attrs["num_steps"]) == 0
 
+    def test_a_failed_flush_names_the_step_before_the_failed_one(
+        self, tmp_path, observed, monkeypatch
+    ):
+        rec = recorder(tmp_path, observed)
+        rec.add_block(
+            "a",
+            role="signal",
+            index=0,
+            grid=observed.grid,
+            encoded=rec.encode("a", "initial_sample", {"x": 1.0}, registering=True),
+        )
+        rec.append_step({"a": rec.encode("a", "sample", {"x": 2.0}, registering=False)})
+
+        def failing_flush(self):
+            raise OSError("flush failed")
+
+        monkeypatch.setattr(h5py.File, "flush", failing_flush)
+        with pytest.raises(OSError, match="flush failed"):
+            rec.append_step(
+                {"a": rec.encode("a", "sample", {"x": 3.0}, registering=False)}
+            )
+        # num_steps was already set to 2 in memory; only step 1 is surely flushed.
+        with pytest.raises(RuntimeError, match="consistent up to step 1 "):
+            rec.encode("a", "sample", {"x": 4.0}, registering=False)
+        monkeypatch.undo()
+        rec.close()
+
     def test_a_failed_add_block_leaves_no_partial_group(
         self, tmp_path, observed, monkeypatch
     ):

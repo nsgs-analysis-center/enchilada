@@ -1,6 +1,6 @@
 """Load a Mojito L1 window, decimate it, store it as WDM and run a Wheel on it.
 
-Needs the `mojito` extra (h5py) and a Mojito L1 file:
+Needs a Mojito L1 file:
 
     uv run --no-sync python examples/mojito_wdm_wheel.py /path/to/mojito_light_..._L1.h5
 
