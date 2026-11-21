@@ -127,8 +127,8 @@ class GBBlock:
     ``BlockState.parameters`` and its signal describe the first current walker
     (its prior draw at registration, a posterior draw after mixing).
     ``state.samples`` holds only this cycle's samples; the campaign file records
-    only the published walker, so collect a chain with the Wheel callback.
-    ``state.updates`` counts calls to ``sample``, each of which
+    only the published walker, so collect the ensemble's samples with the Wheel
+    callback. ``state.updates`` counts calls to ``sample``, each of which
     runs ``steps_per_cycle`` steps.
 
     This CPU example uses one temperature and fixed ensemble splits. Adaptive

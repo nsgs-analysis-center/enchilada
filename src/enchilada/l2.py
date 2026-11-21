@@ -200,7 +200,7 @@ class _Recorder:
         self._file = file
         self._failed: BaseException | None = None
         # Mirrors the file's num_steps: the last step known to be complete.
-        self._last_complete_step = int(file.attrs.get("num_steps", 0))
+        self._last_complete_step = int(file.attrs["num_steps"])
         self._schemas: dict[str, _Schema] = {}
 
     @classmethod

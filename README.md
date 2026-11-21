@@ -15,10 +15,10 @@ noise blocks' covariances, and a `Ledger` containing each block's accepted
 `BlockState`: an optional signal template, an optional covariance, and physical
 parameters. Given an output path, it also records every block's parameters,
 step by step, to a campaign file. Every block is registered as a signal block
-or a noise block. Each block owns its sampler continuation state and diagnostics. The Wheel supplies
-the data minus all other blocks' signals, the covariance the block's role
-receives, and the block's accepted physical state, then validates and adopts
-the returned estimate.
+or a noise block. Each block owns its sampler continuation state and
+diagnostics. The Wheel supplies the data minus all other blocks' signals, the
+covariance the block's role receives, and the block's accepted physical state,
+then validates and adopts the returned estimate.
 Waveforms, likelihoods, and prior/conditional sampling remain model code.
 
 ![The enchilada Wheel: blocks take turns around a hub that owns the data, residual, sum of noise covariances, and ledger](docs/wheel.svg)
@@ -236,9 +236,9 @@ internal sampler steps. EchoBlock's `state.num_sample_calls` counts calls to
 `sample()`, not individual sampler draws; its `state.metadata` holds diagnostics.
 
 Published parameters must support deep copying and, when the Wheel records a
-campaign file, be recordable (see [Campaign output](#campaign-output)). Keep open files, processes, GPU
-resources, and sampler history on the block or in an external sink, outside
-`BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
+campaign file, be recordable (see [Campaign output](#campaign-output)). Keep
+open files, processes, GPU resources, and sampler history on the block or in an
+external sink, outside `BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
 
 Every block is registered under a role, `role="signal"` or `role="noise"`,
 and draws or constructs its own start. `Wheel.add` calls the block's
@@ -459,8 +459,7 @@ not select a separate block domain. A signal block that needs a covariance gets
 it from the noise blocks; a noise block under test receives their sum as its
 `covariance`. The random seed configures the test campaign and also drives
 `initial_sample`; the defaults are shown above. Each model must independently
-validate its prior, likelihood, and
-sampler; see the conjugate example in `examples/toy_fit.py`.
+validate its prior, likelihood, and sampler; see the conjugate example in `examples/toy_fit.py`.
 
 ### Forging a new block
 
@@ -484,14 +483,14 @@ with Wheel(observed, random_seed=0, output_path="campaign.h5") as wheel:
     wheel.add(FixedNoiseBlock("noise", covariance), role="noise")
     wheel.add(my_block, role="signal")
     wheel.run(1000)
-    chain = wheel.l2.chain(my_block.name, "amplitude")  # (1001,): the start, then each cycle
-    latest = wheel.l2.residual(-1, [my_block])       # observation minus every signal block
+    chain = wheel.l2.chain(my_block.name, "amplitude")  # (1001,): start, then cycles
+    latest = wheel.l2.residual(-1, [my_block])  # observation minus every signal block
 
 from enchilada import L2Data
 
 with L2Data.open("campaign.h5", observed_data=observed) as l2:
     print(l2.num_steps, l2.block_names)
-    parameters = l2.parameters("my_block", step=500)
+    parameters = l2.parameters(my_block.name, step=500)
     states = l2.states(500, [my_block])     # {name: BlockState}, templates on the observation grid
     residual = l2.residual(500, [my_block])
 ```
@@ -832,7 +831,7 @@ macOS, with core-only checks through Python 3.14. A separate Python 3.12 job tes
 the core at its dependency floors (NumPy 2.1.0, SciPy 1.14.1, domania 3.0.0,
 h5py 3.12.1) without lisaorbits; another job resolves the numeric-orbit
 dependency floors (the `mojito` extra is kept only so `enchilada[mojito]`
-still installs). Tag pushes matching `v*` run these gates before PyPI Trusted
+installs). Tag pushes matching `v*` run these gates before PyPI Trusted
 Publishing. Manual release dispatches build and validate artifacts without
 publishing, including on tags. See
 [CHANGELOG.md](https://github.com/AaronDJohnson/enchilada/blob/main/CHANGELOG.md) for release notes.
@@ -874,9 +873,9 @@ noise publication is revalidated on every call, an unchanged `FixedNoiseBlock`
 one included, and re-adds the O(log B) partial sums on its path through the
 noise-sum tree, each through the validating constructor (at most one batched
 Cholesky per tree level); a noise block's input, the sum over the other noise
-blocks, is assembled the same way. Chains belong in the campaign file (`output_path`),
-not in `BlockState`; `benchmark_wheel.py --record` measures the cost of
-recording. Run [the benchmark](benchmarks/benchmark_wheel.py) for a
+blocks, is assembled the same way. Chains belong in the campaign file
+(`output_path`), not in `BlockState`; `benchmark_wheel.py --record` measures
+the cost of recording. Run [the benchmark](benchmarks/benchmark_wheel.py) for a
 reproducible workload, cycle timings, and process peak memory usage. Its
 workload is the fixed signals plus one `FixedNoiseBlock` (`"noise_blocks": 1`
 in its report), so its timings are not comparable with runs from before the
