@@ -77,14 +77,15 @@ def test_gb_rebuilds_its_template_from_the_published_parameters(
 ):
     data, noise = spectral_context
     block = make_block(gb_model)
-    # Publish from non-zero data and rebuild on the zero fixture: the rebuild may
+    # Publish from one non-zero dataset and rebuild on another: the rebuild may
     # read only the grid, never the channel values.
     rng = np.random.default_rng(1)
     filled = replace(data, channel_data={"A": np.fft.rfft(rng.normal(size=64))})
+    other = replace(data, channel_data={"A": np.fft.rfft(rng.normal(size=64))})
     published = block.initial_sample(filled, noise, rng=np.random.default_rng(0))
     rebuilt = block.state_from_parameters(
         {name: np.float64(value) for name, value in published.parameters.items()},
-        data,
+        other,
     )
     assert isinstance(rebuilt, BlockState)
     assert rebuilt.covariance is None
