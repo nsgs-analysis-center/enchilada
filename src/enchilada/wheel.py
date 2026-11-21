@@ -238,10 +238,7 @@ class Wheel:
             covariance=covariance,
             rng=candidate_rng,
         )
-        if block_grid != observed.grid:
-            new_block_state = self._canonical_state(
-                new_block_state, conditional_residual
-            )
+        new_block_state = self._canonical_state(new_block_state, conditional_residual)
         self._adopt(
             block_name,
             new_block_state,
@@ -293,6 +290,8 @@ class Wheel:
         return conditional_residual, covariance
 
     def _canonical_state(self, state: object, source_reference: L1Data) -> object:
+        # a non-BlockState passes through; _adopt supplies the block/method-specific
+        # error.
         return _state_on_grid(
             state, self._observed_data.grid, reference_data=source_reference
         )
@@ -331,7 +330,6 @@ class Wheel:
                     block_name, block_grid, role=role, registered=True
                 )
                 current_block_state = self._ledger[block_name]
-                translated = block_grid != self._observed_data.grid
                 current_block_state = _state_on_grid(
                     current_block_state, block_grid, reference_data=self._observed_data
                 )
@@ -341,10 +339,9 @@ class Wheel:
                     current_block_state=current_block_state,
                     rng=candidate_rng,
                 )
-                if translated:
-                    new_block_state = self._canonical_state(
-                        new_block_state, conditional_residual
-                    )
+                new_block_state = self._canonical_state(
+                    new_block_state, conditional_residual
+                )
                 self._adopt(
                     block_name,
                     new_block_state,

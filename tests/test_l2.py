@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from enchilada import Grid, WDMGrid, transform
-from enchilada.l2 import _Recorder
+from enchilada.l2 import (
+    _block_grid_from_attrs,
+    _grid_from_attrs,
+    _Recorder,
+    _Schema,
+)
 
 
 def recorder(tmp_path, observed, name="campaign.h5"):
@@ -48,8 +53,17 @@ class TestRecorder:
 
     def test_an_existing_file_is_refused(self, tmp_path, observed):
         recorder(tmp_path, observed).close()
-        with pytest.raises(FileExistsError):
+        with pytest.raises(FileExistsError, match="name a new path"):
             recorder(tmp_path, observed)
+
+    def test_a_failed_create_leaves_no_file(self, tmp_path, observed, monkeypatch):
+        def refuse(file, observed):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(_Recorder, "initialize", refuse)
+        with pytest.raises(RuntimeError, match="boom"):
+            recorder(tmp_path, observed)
+        assert not (tmp_path / "campaign.h5").exists()
 
     def test_encode_fixes_the_schema_at_registration(self, tmp_path, observed):
         rec = recorder(tmp_path, observed)
@@ -98,6 +112,8 @@ class TestRecorder:
             ),
             ({"nested": {"a": 1}}, TypeError, "recorded parameters must be"),
             ({"nothing": None}, TypeError, "recorded parameters must be"),
+            ({"ragged": [[1], [1, 2]]}, TypeError, "is not a regular numeric array"),
+            ({"a\x00b": 1.0}, ValueError, "NUL"),
         ],
     )
     def test_encode_refuses_unrecordable_values(
@@ -151,13 +167,15 @@ class TestRecorder:
                 {"amplitude": 2.0, "sources": np.zeros((2, 2))},
                 registering=False,
             )
-        ragged = rec.encode(
+        narrow_and_empty = rec.encode(
             "b",
             "sample",
             {"amplitude": np.float32(2.0), "sources": np.zeros(0)},
             registering=False,
         )
-        assert ragged.values[0].dtype == np.float64 and ragged.values[1].shape == (0,)
+        assert narrow_and_empty.values[
+            0
+        ].dtype == np.float64 and narrow_and_empty.values[1].shape == (0,)
         rec.encode(
             "b",
             "sample",
@@ -210,12 +228,15 @@ class TestRecorder:
             assert list(a.attrs["kinds"]) == ["f"]
             assert list(a.attrs["ndims"]) == [0]
             assert "shapes" not in a
+            assert a["parameters/x"].maxshape == (None,)
+            assert a["parameters/x"].chunks == (1024,)
             np.testing.assert_array_equal(a["parameters/x"][:], [1.0, 2.0])
             pop = file["blocks/pop"]
             assert pop.attrs["data_domain"] == "wdm"
             assert int(pop.attrs["num_frequency_divisions"]) == 8
             assert int(pop.attrs["num_time_divisions"]) == 8
             np.testing.assert_array_equal(pop["shapes"][:], [[2, 1, 2], [0, 2, 2]])
+            assert pop["shapes"].dtype == np.int64
             np.testing.assert_array_equal(pop["parameters/f"][:], [1.0, 2.0])
             np.testing.assert_array_equal(
                 pop["parameters/m"][:], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
@@ -287,3 +308,114 @@ class TestRecorder:
             assert list(file["blocks"]) == ["a"]
             assert int(file["blocks/a"].attrs["num_entries"]) == 1
             assert file["simulation"].attrs["truth"] == "a"
+
+    def test_stored_dtypes_follow_the_kinds(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        rec.add_block(
+            "a",
+            role="signal",
+            index=0,
+            grid=observed.grid,
+            encoded=rec.encode(
+                "a",
+                "initial_sample",
+                {"i": np.int8(3), "c": np.complex64(1j), "b": True, "u": np.uint8(2)},
+                registering=True,
+            ),
+        )
+        rec.close()
+        with h5py.File(tmp_path / "campaign.h5", "r") as file:
+            parameters = file["blocks/a/parameters"]
+            assert parameters["i"].dtype == np.int64
+            assert parameters["c"].dtype == np.complex128
+            assert parameters["b"].dtype == np.dtype(bool)
+            assert parameters["u"].dtype == np.uint64
+
+    def test_encode_refuses_an_unregistered_block(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        with pytest.raises(RuntimeError, match="not registered"):
+            rec.encode("nope", "sample", {}, registering=False)
+
+    def test_a_failed_write_latches_the_recorder(self, tmp_path, observed, monkeypatch):
+        rec = recorder(tmp_path, observed)
+        for name, index in (("a", 0), ("b", 1)):
+            rec.add_block(
+                name,
+                role="signal",
+                index=index,
+                grid=observed.grid,
+                encoded=rec.encode(
+                    name, "initial_sample", {"x": 1.0}, registering=True
+                ),
+            )
+        pending = {
+            name: rec.encode(name, "sample", {"x": 2.0}, registering=False)
+            for name in ("a", "b")
+        }
+        original = _Recorder._append_entry
+        calls = []
+
+        def flaky(group, encoded):
+            calls.append(group)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            original(group, encoded)
+
+        monkeypatch.setattr(_Recorder, "_append_entry", staticmethod(flaky))
+        with pytest.raises(OSError, match="disk full"):
+            rec.append_step(pending)
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            rec.encode("a", "sample", {"x": 2.0}, registering=False)
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            rec.append_step(pending)
+        rec.close()
+        with h5py.File(tmp_path / "campaign.h5", "r") as file:
+            assert int(file.attrs["num_steps"]) == 0
+
+    def test_append_step_refuses_an_entry_for_another_schema(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        for name in ("a", "b"):
+            rec.add_block(
+                name,
+                role="signal",
+                index=0,
+                grid=observed.grid,
+                encoded=rec.encode(
+                    name, "initial_sample", {"x": 1.0}, registering=True
+                ),
+            )
+        with pytest.raises(RuntimeError, match="another block's schema"):
+            rec.append_step(
+                {
+                    "a": rec.encode("b", "sample", {"x": 1.0}, registering=False),
+                    "b": rec.encode("b", "sample", {"x": 1.0}, registering=False),
+                }
+            )
+
+
+class TestAttrsRoundTrip:
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            _Schema((), (), ()),
+            _Schema(("a", "b"), ("f", "c"), (0, 2)),
+        ],
+    )
+    def test_schema(self, tmp_path, schema):
+        with h5py.File(tmp_path / "s.h5", "w") as file:
+            schema.write(file.attrs)
+            assert _Schema.read(file.attrs) == schema
+
+    def test_grids(self, tmp_path, observed):
+        wdm = transform(observed, "wdm", num_frequency_divisions=8)
+        for data in (observed, wdm):
+            rec = _Recorder.create(tmp_path / f"{data.data_domain}.h5", data)
+            attrs = rec.file["observation"].attrs
+            assert _grid_from_attrs(attrs) == data.grid
+            assert _block_grid_from_attrs(attrs, observed.grid) == Grid(
+                data.data_domain,
+                observed.num_time_samples,
+                observed.sample_rate_hz,
+                data.wdm_grid,
+            )
+            rec.close()

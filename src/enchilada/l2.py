@@ -1,7 +1,7 @@
 """The campaign output file: every block's parameters at every step, and its reader.
 
 The Wheel writes the file through `_Recorder`; `L2Data` reads it back. Layout,
-format version 1 (`docs/superpowers/specs/2026-11-20-l2data-design.md`):
+format version 1:
 
     /                              attrs: format, format_version, enchilada_version,
                                    num_steps (committed complete cycles)
@@ -15,12 +15,16 @@ format version 1 (`docs/superpowers/specs/2026-11-20-l2data-design.md`):
 Entry i of a block is its state at step first_step + i; entry 0 is its start.
 Counters (`num_entries`, `num_steps`) are written after the data they count and
 the file is flushed after every record, so a reader trusts the counters and a
-crash loses at most the record in progress.
+crash loses at most the record in progress. `num_steps` bounds every block: a
+reader takes at most `num_steps - first_step + 1` entries, whatever `num_entries`
+says.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -55,9 +59,10 @@ def _check_hdf5_name(value: str, what: str, kind: str) -> None:
 
     `kind` is "group" for a block name or "dataset" for a parameter key.
     """
-    if "/" in value:
+    if "/" in value or "\x00" in value:
         raise ValueError(
-            f"{what} {value!r} contains '/'; it cannot name a {kind} in the output file"
+            f"{what} {value!r} contains '/' or a NUL character; it cannot name a "
+            f"{kind} in the output file"
         )
     if value in ("", ".", ".."):
         raise ValueError(f"{what} {value!r} cannot name a {kind} in the output file")
@@ -71,13 +76,13 @@ class _Schema:
     kinds: tuple[str, ...]
     ndims: tuple[int, ...]
 
-    def write(self, attrs: Any) -> None:
+    def write(self, attrs: MutableMapping[str, Any]) -> None:
         attrs["keys"] = np.array(list(self.keys), dtype=h5py.string_dtype())
         attrs["kinds"] = np.array(list(self.kinds), dtype=h5py.string_dtype())
         attrs["ndims"] = np.array(list(self.ndims), dtype=np.int64)
 
     @classmethod
-    def read(cls, attrs: Any) -> _Schema:
+    def read(cls, attrs: Mapping[str, Any]) -> _Schema:
         return cls(
             tuple(str(key) for key in attrs["keys"]),
             tuple(str(kind) for kind in attrs["kinds"]),
@@ -93,7 +98,7 @@ class _Encoded:
     values: tuple[np.ndarray, ...]
 
 
-def _write_observation(group: Any, observed: L1Data) -> None:
+def _write_observation(group: h5py.Group, observed: L1Data) -> None:
     group.attrs["data_domain"] = observed.data_domain
     group.attrs["num_time_samples"] = int(observed.num_time_samples)
     group.attrs["sample_rate_hz"] = float(observed.sample_rate_hz)
@@ -103,33 +108,70 @@ def _write_observation(group: Any, observed: L1Data) -> None:
     group.attrs["channel_names"] = np.array(
         list(observed.channel_names), dtype=h5py.string_dtype()
     )
-    if observed.wdm_grid is not None:
-        group.attrs["num_frequency_divisions"] = (
-            observed.wdm_grid.num_frequency_divisions
-        )
-        group.attrs["num_time_divisions"] = observed.wdm_grid.num_time_divisions
+    _write_wdm_grid(group.attrs, observed.wdm_grid)
 
 
-def _grid_from_attrs(attrs: Any) -> Grid:
-    wdm = None
-    if attrs["data_domain"] == "wdm":
-        wdm = WDMGrid(
-            num_frequency_divisions=int(attrs["num_frequency_divisions"]),
-            num_time_divisions=int(attrs["num_time_divisions"]),
-        )
+def _write_wdm_grid(attrs: MutableMapping[str, Any], wdm_grid: WDMGrid | None) -> None:
+    if wdm_grid is not None:
+        attrs["num_frequency_divisions"] = wdm_grid.num_frequency_divisions
+        attrs["num_time_divisions"] = wdm_grid.num_time_divisions
+
+
+def _wdm_grid_from_attrs(attrs: Mapping[str, Any]) -> WDMGrid | None:
+    if attrs["data_domain"] != "wdm":
+        return None
+    return WDMGrid(
+        num_frequency_divisions=int(attrs["num_frequency_divisions"]),
+        num_time_divisions=int(attrs["num_time_divisions"]),
+    )
+
+
+def _grid_from_attrs(attrs: Mapping[str, Any]) -> Grid:
     return Grid(
         str(attrs["data_domain"]),
         int(attrs["num_time_samples"]),
         float(attrs["sample_rate_hz"]),
-        wdm,
+        _wdm_grid_from_attrs(attrs),
     )
 
 
-class _Recorder:
-    """Owns the open campaign file and appends to it; the Wheel's writer."""
+def _block_grid_from_attrs(attrs: Mapping[str, Any], observation_grid: Grid) -> Grid:
+    """A block group's grid: its domain and divisions on the observation's samples."""
+    return Grid(
+        str(attrs["data_domain"]),
+        observation_grid.num_time_samples,
+        observation_grid.sample_rate_hz,
+        _wdm_grid_from_attrs(attrs),
+    )
 
-    def __init__(self, file: Any) -> None:
+
+def _recordable_array(label: str, key: str, value: Any) -> np.ndarray:
+    """`value` as an array of a recordable kind, or TypeError naming block and key."""
+    try:
+        array = np.asarray(value)
+    except (TypeError, ValueError) as error:
+        raise TypeError(
+            f"{label} parameters[{key!r}] is not a regular numeric array ({error}); "
+            "recorded parameters must be bool, integer, float or complex scalars or "
+            "arrays"
+        ) from error
+    if array.dtype.kind not in STORED_DTYPES:
+        raise TypeError(
+            f"{label} parameters[{key!r}] has dtype {array.dtype}; recorded "
+            "parameters must be bool, integer, float or complex scalars or arrays"
+        )
+    return array
+
+
+class _Recorder:
+    """Owns the open campaign file and appends to it; the Wheel's writer.
+
+    `close` closes the file whether or not `create` opened it.
+    """
+
+    def __init__(self, file: h5py.File) -> None:
         self._file = file
+        self._failed: BaseException | None = None
         self._schemas: dict[str, _Schema] = {}
 
     @classmethod
@@ -140,18 +182,21 @@ class _Recorder:
         # still holds open as a plain OSError, not FileExistsError.
         if os.path.exists(name):
             raise FileExistsError(
-                f"{name} exists; the Wheel does not overwrite or resume a campaign "
-                "file, name a new path"
+                f"{name!r} exists; the Wheel does not overwrite or resume a campaign "
+                "file, so name a new path"
             )
         file = h5py.File(name, "x")
         try:
             return cls.initialize(file, observed)
-        except Exception:
+        except BaseException:
+            # Mode "x" proves this call made the file, so it is ours to remove.
             file.close()
+            with contextlib.suppress(OSError):
+                os.remove(name)
             raise
 
     @classmethod
-    def initialize(cls, file: Any, observed: L1Data) -> _Recorder:
+    def initialize(cls, file: h5py.File, observed: L1Data) -> _Recorder:
         """Write the format and observation metadata into an open, writable `file`.
 
         For a writer that opens the file itself to put other groups beside
@@ -167,7 +212,7 @@ class _Recorder:
         return cls(file)
 
     @property
-    def file(self) -> Any:
+    def file(self) -> h5py.File:
         return self._file
 
     @property
@@ -177,6 +222,15 @@ class _Recorder:
     def close(self) -> None:
         if self._file:
             self._file.close()
+
+    def _require_writable(self) -> None:
+        if self._failed is not None:
+            steps = int(self._file.attrs["num_steps"])
+            raise RuntimeError(
+                "an earlier write to the campaign file failed part-way; the file is "
+                f"consistent up to step {steps} but cannot be appended to; construct "
+                "a new Wheel to record another campaign"
+            ) from self._failed
 
     def encode(
         self,
@@ -191,23 +245,22 @@ class _Recorder:
         A registering block fixes its schema from these parameters; a
         registered block must match its schema's keys, kinds and dimension
         counts. Raises TypeError or ValueError and stores nothing.
+
+        `longdouble` and `clongdouble` values are narrowed to float64 and
+        complex128. The returned values may alias the caller's arrays, which
+        must not be mutated before the write.
         """
+        self._require_writable()
         label = f"{block_name}.{method_name}"
         arrays: dict[str, np.ndarray] = {}
         for key, value in parameters.items():
             if not isinstance(key, str):
                 raise TypeError(
-                    f"{label} parameters has a non-string key {key!r}; recorded "
+                    f"{label} parameters have a non-string key {key!r}; recorded "
                     "parameter names must be strings"
                 )
             _check_hdf5_name(key, f"{label} parameter name", "dataset")
-            array = np.asarray(value)
-            if array.dtype.kind not in STORED_DTYPES:
-                raise TypeError(
-                    f"{label} parameters[{key!r}] has dtype {array.dtype}; recorded "
-                    "parameters must be bool, integer, float or complex scalars or "
-                    "arrays"
-                )
+            array = _recordable_array(label, key, value)
             arrays[key] = array
         if registering:
             schema = _Schema(
@@ -216,6 +269,10 @@ class _Recorder:
                 tuple(array.ndim for array in arrays.values()),
             )
         else:
+            if block_name not in self._schemas:
+                raise RuntimeError(
+                    f"{label}: block {block_name!r} is not registered with the recorder"
+                )
             schema = self._schemas[block_name]
             if set(arrays) != set(schema.keys):
                 raise ValueError(
@@ -249,55 +306,68 @@ class _Recorder:
         self, name: str, *, role: str, index: int, grid: Grid, encoded: _Encoded
     ) -> None:
         """Create the block's group and datasets and write its start as entry 0."""
-        group = self._file["blocks"].create_group(name)
-        group.attrs["role"] = role
-        group.attrs["index"] = int(index)
-        group.attrs["first_step"] = int(self._file.attrs["num_steps"])
-        group.attrs["data_domain"] = grid.data_domain
-        if grid.wdm_grid is not None:
-            group.attrs["num_frequency_divisions"] = (
-                grid.wdm_grid.num_frequency_divisions
-            )
-            group.attrs["num_time_divisions"] = grid.wdm_grid.num_time_divisions
-        encoded.schema.write(group.attrs)
-        group.attrs["num_entries"] = 0
-        parameters = group.create_group("parameters")
-        for key, kind in zip(encoded.schema.keys, encoded.schema.kinds, strict=True):
-            parameters.create_dataset(
-                key,
-                shape=(0,),
-                maxshape=(None,),
-                dtype=STORED_DTYPES[kind],
-                chunks=(_CHUNK,),
-            )
-        width = sum(encoded.schema.ndims)
-        if width:
-            group.create_dataset(
-                "shapes",
-                shape=(0, width),
-                maxshape=(None, width),
-                dtype=np.int64,
-                chunks=(_CHUNK, width),
-            )
-        self._schemas[name] = encoded.schema
-        self._append_entry(group, encoded)
-        self._file.flush()
+        self._require_writable()
+        try:
+            group = self._file["blocks"].create_group(name)
+            group.attrs["role"] = role
+            group.attrs["index"] = int(index)
+            group.attrs["first_step"] = int(self._file.attrs["num_steps"])
+            group.attrs["data_domain"] = grid.data_domain
+            _write_wdm_grid(group.attrs, grid.wdm_grid)
+            encoded.schema.write(group.attrs)
+            group.attrs["num_entries"] = 0
+            parameters = group.create_group("parameters")
+            for key, kind in zip(
+                encoded.schema.keys, encoded.schema.kinds, strict=True
+            ):
+                parameters.create_dataset(
+                    key,
+                    shape=(0,),
+                    maxshape=(None,),
+                    dtype=STORED_DTYPES[kind],
+                    chunks=(_CHUNK,),
+                )
+            width = sum(encoded.schema.ndims)
+            if width:
+                group.create_dataset(
+                    "shapes",
+                    shape=(0, width),
+                    maxshape=(None, width),
+                    dtype=np.int64,
+                    chunks=(_CHUNK, width),
+                )
+            self._schemas[name] = encoded.schema
+            self._append_entry(group, encoded)
+            self._file.flush()
+        except BaseException as error:
+            self._failed = error
+            raise
 
     def append_step(self, pending: dict[str, _Encoded]) -> None:
         """Append one entry per registered block and commit the step."""
+        self._require_writable()
         if set(pending) != set(self._schemas):
             raise RuntimeError(
                 "a step needs an entry for every registered block; got "
                 f"{sorted(pending)} for {sorted(self._schemas)}"
             )
-        blocks = self._file["blocks"]
         for name, encoded in pending.items():
-            self._append_entry(blocks[name], encoded)
-        self._file.attrs["num_steps"] = int(self._file.attrs["num_steps"]) + 1
-        self._file.flush()
+            if encoded.schema is not self._schemas[name]:
+                raise RuntimeError(
+                    f"{name}: the entry was encoded for another block's schema"
+                )
+        try:
+            blocks = self._file["blocks"]
+            for name, encoded in pending.items():
+                self._append_entry(blocks[name], encoded)
+            self._file.attrs["num_steps"] = int(self._file.attrs["num_steps"]) + 1
+            self._file.flush()
+        except BaseException as error:
+            self._failed = error
+            raise
 
     @staticmethod
-    def _append_entry(group: Any, encoded: _Encoded) -> None:
+    def _append_entry(group: h5py.Group, encoded: _Encoded) -> None:
         count = int(group.attrs["num_entries"])
         parameters = group["parameters"]
         for key, array in zip(encoded.schema.keys, encoded.values, strict=True):
