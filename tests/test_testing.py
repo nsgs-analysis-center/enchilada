@@ -47,6 +47,11 @@ class FlatNoiseBlock:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return self._publish(conditional_residual, covariance)
 
+    def state_from_parameters(self, parameters, reference_data):
+        return reference_data.block_state().with_covariance(
+            white_covariance(reference_data, self.level)
+        )
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         return self._publish(conditional_residual, covariance)
 

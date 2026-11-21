@@ -22,6 +22,9 @@ class Counter:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return conditional_residual.zero_block_state(parameters={"a": 0.0})
 
+    def state_from_parameters(self, parameters, reference_data):
+        return reference_data.zero_block_state(parameters=dict(parameters))
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.n += 1
         current_block_state.parameters["a"] = rng.normal()

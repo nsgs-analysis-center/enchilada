@@ -69,6 +69,25 @@ class StartingBlock:
             **grid_options,
         )
 
+    def state_from_parameters(self, parameters, reference_data):
+        time_reference = transform(reference_data, "time")
+        state = time_reference.block_state(
+            {"A": np.full(time_reference.num_time_samples, parameters["amplitude"])},
+            parameters={"amplitude": parameters["amplitude"]},
+        )
+        grid = reference_data.wdm_grid
+        grid_options = (
+            {}
+            if grid is None
+            else {"num_frequency_divisions": grid.num_frequency_divisions}
+        )
+        return transform(
+            state,
+            reference_data.data_domain,
+            reference_data=time_reference,
+            **grid_options,
+        )
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         assert current_block_state.parameters["amplitude"] == self.amplitude
         assert (

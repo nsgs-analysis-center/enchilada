@@ -18,7 +18,7 @@ import pytest
 CONSUMER = """
 from dataclasses import dataclass
 import numpy as np
-from typing import assert_type
+from typing import Any, assert_type
 from enchilada import (
     Block, L1Data, Covariance, BlockState, Wheel, WDMGrid, Grid,
     FixedNoiseBlock, transform,
@@ -78,6 +78,11 @@ class FrozenBlock:
     ) -> BlockState:
         return BlockState()
 
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        return BlockState()
+
     def sample(
         self, conditional_residual: L1Data,
         covariance: Covariance | None,
@@ -96,6 +101,11 @@ class ExplicitBlock(Block):
     def initial_sample(
         self, conditional_residual: L1Data,
         covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
     ) -> BlockState:
         return BlockState()
 
@@ -234,6 +244,9 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
         name: str
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
+            return BlockState(parameters={"value": 1})
+
+        def state_from_parameters(self, parameters, reference_data):
             return BlockState(parameters={"value": 1})
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):

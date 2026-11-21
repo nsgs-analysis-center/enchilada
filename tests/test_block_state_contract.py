@@ -26,6 +26,11 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return conditional_residual.zero_block_state(parameters={"amplitude": 0.0})
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Not rebuilt: this test block's template is not a function of its
+            # parameters.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             self.state.num_calls += 1
             amplitude = current_block_state.parameters["amplitude"] + 1.0

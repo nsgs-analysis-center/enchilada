@@ -28,6 +28,9 @@ class ConstSignal:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return const_block_state(conditional_residual, self.value)
 
+    def state_from_parameters(self, parameters, reference_data):
+        return const_block_state(reference_data, self.value)
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
         return const_block_state(conditional_residual, self.value)
@@ -57,6 +60,12 @@ class WhiteNoise:
         return BlockState(
             covariance=white_covariance(conditional_residual, self.level),
             parameters={"level": self.level},
+        )
+
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(
+            covariance=white_covariance(reference_data, float(parameters["level"])),
+            parameters={"level": parameters["level"]},
         )
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -115,6 +124,11 @@ def offender(role, method, *, with_template, with_covariance):
         def initial_sample(self, conditional_residual, covariance, *, rng):
             make = self._offending if method == "initial_sample" else self._allowed
             return make(conditional_residual)
+
+        def state_from_parameters(self, parameters, reference_data):
+            # Not rebuilt: this test block's template is not a function of its
+            # parameters.
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             make = self._offending if method == "sample" else self._allowed
@@ -502,6 +516,11 @@ class TestCovarianceGrid:
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 raise AssertionError("add must refuse the grid first")
 
+            def state_from_parameters(self, parameters, reference_data):
+                # Not rebuilt: this test block's template is not a function of its
+                # parameters.
+                return BlockState(parameters=dict(parameters))
+
             def sample(
                 self, conditional_residual, covariance, current_block_state, *, rng
             ):
@@ -578,6 +597,11 @@ class TestCovarianceGrid:
                     else conditional_residual
                 )
                 return BlockState(covariance=white_covariance(published_on, 1.0))
+
+            def state_from_parameters(self, parameters, reference_data):
+                # Not rebuilt: this test block's template is not a function of its
+                # parameters.
+                return BlockState(parameters=dict(parameters))
 
             def sample(
                 self, conditional_residual, covariance, current_block_state, *, rng
