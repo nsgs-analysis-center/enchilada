@@ -280,7 +280,7 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
             return BlockState(parameters={"value": 1})
 
         def state_from_parameters(self, parameters, reference_data):
-            return BlockState(parameters={"value": 1})
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state

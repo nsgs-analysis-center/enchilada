@@ -45,8 +45,6 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
             return BlockState()
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -87,8 +85,6 @@ def test_same_grid_block_receives_the_covariance_without_transform(
         name = "explicit"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -120,8 +116,6 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
         name = "mutate"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):

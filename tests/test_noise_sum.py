@@ -126,8 +126,7 @@ def offender(role, method, *, with_template, with_covariance):
             return make(conditional_residual)
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -517,8 +516,7 @@ class TestCovarianceGrid:
                 raise AssertionError("add must refuse the grid first")
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
+                # Stub: no test rebuilds this block's state.
                 return BlockState(parameters=dict(parameters))
 
             def sample(
@@ -599,8 +597,7 @@ class TestCovarianceGrid:
                 return BlockState(covariance=white_covariance(published_on, 1.0))
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
+                # Stub: no test rebuilds this block's state.
                 return BlockState(parameters=dict(parameters))
 
             def sample(

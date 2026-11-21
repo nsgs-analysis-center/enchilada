@@ -59,19 +59,18 @@ class LevelNoiseBlock:
         self.state = self.State()
 
     def initial_sample(self, conditional_residual, covariance, *, rng):
-        return conditional_residual.block_state().with_covariance(
-            white_covariance(conditional_residual, 1.0)
-        )
+        return self.state_from_parameters({"level": 1.0}, conditional_residual)
 
     def state_from_parameters(self, parameters, reference_data):
-        return reference_data.block_state().with_covariance(
-            white_covariance(reference_data, float(self.state.updates + 1))
+        return BlockState(
+            covariance=white_covariance(reference_data, float(parameters["level"])),
+            parameters=dict(parameters),
         )
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
-        return conditional_residual.block_state().with_covariance(
-            white_covariance(conditional_residual, float(self.state.updates + 1))
+        return self.state_from_parameters(
+            {"level": float(self.state.updates + 1)}, conditional_residual
         )
 
 
@@ -124,8 +123,7 @@ class TestLedger:
                 return BlockState()
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
+                # Stub: no test rebuilds this block's state.
                 return BlockState(parameters=dict(parameters))
 
             def sample(
@@ -636,8 +634,6 @@ class TestBoundaryGuards:
                 return BlockState()
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
                 return BlockState(parameters=dict(parameters))
 
             def sample(
@@ -892,9 +888,7 @@ class TestDocumentedContracts:
                 return partly_zero_result(conditional_residual)
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
-                return BlockState(parameters=dict(parameters))
+                return partly_zero_result(reference_data)
 
             def sample(
                 self,
@@ -927,8 +921,6 @@ class TestDocumentedContracts:
                 return BlockState()
 
             def state_from_parameters(self, parameters, reference_data):
-                # Not rebuilt: this test block's template is not a function of its
-                # parameters.
                 return BlockState(parameters=dict(parameters))
 
             def sample(

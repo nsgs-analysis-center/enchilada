@@ -51,22 +51,8 @@ class StartingBlock:
 
     def initial_sample(self, conditional_residual, covariance, *, rng):
         self.state.starts.append((conditional_residual, covariance, rng))
-        time_reference = transform(conditional_residual, "time")
-        start = time_reference.block_state(
-            {"A": np.full(time_reference.num_time_samples, self.amplitude)},
-            parameters={"amplitude": self.amplitude},
-        )
-        grid = conditional_residual.wdm_grid
-        grid_options = (
-            {}
-            if grid is None
-            else {"num_frequency_divisions": grid.num_frequency_divisions}
-        )
-        return transform(
-            start,
-            conditional_residual.data_domain,
-            reference_data=time_reference,
-            **grid_options,
+        return self.state_from_parameters(
+            {"amplitude": self.amplitude}, conditional_residual
         )
 
     def state_from_parameters(self, parameters, reference_data):
@@ -106,6 +92,12 @@ def noise_start(level):
         def initial_sample(self, conditional_residual, covariance, *, rng):
             self.state.starts.append((conditional_residual, covariance, rng))
             return BlockState(covariance=white_covariance(conditional_residual, level))
+
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(
+                covariance=white_covariance(reference_data, level),
+                parameters=dict(parameters),
+            )
 
     return NoiseStart()
 

@@ -129,8 +129,7 @@ def test_wdm_noise_publication_is_held_on_the_wdm_grid():
         name = "noise"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -174,8 +173,6 @@ def test_failed_translated_result_preserves_accepted_state_and_rng(failure):
         name = "random"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -226,8 +223,7 @@ def test_invalid_domain_selection_does_not_register_or_sample():
             raise AssertionError("registration must fail on the domain first")
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -324,8 +320,7 @@ def test_block_on_another_grid_than_the_covariance_is_refused_at_add(role):
             )
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -395,8 +390,7 @@ def test_default_block_is_refused_once_a_frequency_noise_block_has_published():
         name = "signal"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -413,8 +407,7 @@ def test_default_block_is_refused_once_a_frequency_noise_block_has_published():
             )
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -459,8 +452,7 @@ def test_covariance_returned_on_another_grid_than_the_block_is_refused():
         name = "frequency_noise"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -520,9 +512,7 @@ def test_covariance_published_on_the_block_grid_is_held_there():
             return self._publish(conditional_residual, 1.0)
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
-            return BlockState(parameters=dict(parameters))
+            return self._publish(reference_data, parameters["level"])
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return self._publish(conditional_residual, 1.0 + abs(rng.normal()))

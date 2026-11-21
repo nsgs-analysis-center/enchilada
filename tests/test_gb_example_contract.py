@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel, transform
+from enchilada import Covariance, FixedNoiseBlock, L1Data, Wheel, transform
 
 
 @pytest.fixture
@@ -147,9 +147,7 @@ def test_gb_frequency_registration_reads_its_native_frequency_covariance(
             return block.initial_sample(conditional_residual, covariance, rng=rng)
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
-            return BlockState(parameters=dict(parameters))
+            return block.state_from_parameters(parameters, reference_data)
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             seen_psds.append(block._context(conditional_residual, covariance)[1]["A"])

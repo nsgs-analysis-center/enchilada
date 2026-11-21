@@ -92,8 +92,7 @@ def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_s
         name = "signal"
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -290,8 +289,7 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
             return population_start(conditional_residual)
 
         def state_from_parameters(self, parameters, reference_data):
-            # Not rebuilt: this test block's template is not a function of its
-            # parameters.
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -330,7 +328,7 @@ class Baseline:
     name = "baseline"
 
     def state_from_parameters(self, parameters, reference_data):
-        # Not rebuilt: this test block's template is not a function of its parameters.
+        # Stub: no test rebuilds this block's state.
         return BlockState(parameters=dict(parameters))
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
