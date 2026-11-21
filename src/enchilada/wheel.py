@@ -10,7 +10,9 @@ from typing import Self
 import numpy as np
 
 from enchilada._sum_tree import NoiseSum, Signal, SignalSum
-from enchilada.block import ROLES, Block, Role
+from enchilada.block import ROLES as ROLES
+from enchilada.block import Block
+from enchilada.block import Role as Role
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
@@ -212,17 +214,17 @@ class Wheel:
         """Register a block under a role and adopt the start its initial_sample returns.
 
         role is "signal" or "noise" and is checked before the block is inspected
-        or called. A signal block publishes a template and never a covariance; a noise
-        block publishes a covariance on every call and never a template.
-        block_to_register must have a unique name and implement initial_sample,
-        sample and state_from_parameters. Failed registration leaves the
-        ledger, block list, residual, both sums, the Wheel RNG and the file as
-        they were. It fails on: an exception from initial_sample; a return that
-        is not a BlockState; an off-grid or non-finite template; a field the
-        role forbids or lacks; a covariance on another grid than the block's; a
-        state that cannot be deep-copied; and, when recording, parameters that
-        cannot be recorded or a name that cannot name an HDF5 group (checked
-        before initial_sample).
+        or called. A signal block publishes a template and never a covariance;
+        a noise block publishes a covariance on every call and never a
+        template. block_to_register must have a unique name and implement
+        initial_sample, sample and state_from_parameters. Failed registration
+        leaves the ledger, block list, residual, both sums, the Wheel RNG and
+        the file as they were. It fails on: an exception from initial_sample; a
+        return that is not a BlockState; an off-grid or non-finite template; a
+        field the role forbids or lacks; a covariance on another grid than the
+        block's; a state that cannot be deep-copied; and, when recording,
+        parameters that cannot be recorded or a name that cannot name an HDF5
+        group (checked before initial_sample).
 
         initial_sample receives the current working residual (the observations
         minus the adopted starts of every block registered so far) on this

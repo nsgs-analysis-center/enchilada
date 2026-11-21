@@ -1092,6 +1092,11 @@ class Counts(Amplitude):
     def __init__(self, name, start):
         super().__init__(name, start)
         self.calls = 0
+        self.initial_calls = 0
+
+    def initial_sample(self, conditional_residual, covariance, *, rng):
+        self.initial_calls += 1
+        return super().initial_sample(conditional_residual, covariance, rng=rng)
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.calls += 1
@@ -1366,6 +1371,7 @@ class TestWheelRecords:
         wheel = Wheel(observed, random_seed=0, output_path=tmp_path / "c.h5")
         block = Counts("a", 1.0)
         wheel.add(block, role="signal")
+        starts = Counts("b", 1.0)
 
         def full_disk(group, encoded):
             raise OSError("disk full")
@@ -1380,7 +1386,8 @@ class TestWheelRecords:
         with pytest.raises(RuntimeError, match="failed part-way"):
             wheel.run(1)
         with pytest.raises(RuntimeError, match="failed part-way"):
-            wheel.add(Amplitude("b", 1.0), role="signal")
+            wheel.add(starts, role="signal")
+        assert starts.initial_calls == 0
         assert block.calls == 1
 
     def test_an_add_interrupted_before_the_write_refuses_the_next_run(
@@ -1454,5 +1461,8 @@ class TestWheelRecords:
             with Wheel(observed, random_seed=0, output_path=path) as wheel:
                 wheel.add(Amplitude("a", 1.0), role="signal")
                 raise KeyError("inside")
+        assert wheel._recorder.closed
+        with pytest.raises(ValueError, match="the campaign output file is closed"):
+            wheel.run(1)
         with L2Data.open(path, observed_data=observed) as l2:
             assert l2.block_names == ("a",)
