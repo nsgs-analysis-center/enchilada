@@ -199,7 +199,8 @@ class _Recorder:
     def __init__(self, file: h5py.File) -> None:
         self._file = file
         self._failed: BaseException | None = None
-        self._failed_at_step = 0
+        # Mirrors the file's num_steps: the last step known to be complete.
+        self._last_complete_step = int(file.attrs.get("num_steps", 0))
         self._schemas: dict[str, _Schema] = {}
 
     @classmethod
@@ -278,7 +279,7 @@ class _Recorder:
 
     def _require_writable(self) -> None:
         if self._failed is not None:
-            steps = self._failed_at_step
+            steps = self._last_complete_step
             raise RuntimeError(
                 "an earlier write to the campaign file failed part-way; the file is "
                 f"consistent up to step {steps} but cannot be appended to; construct "
@@ -369,7 +370,7 @@ class _Recorder:
             group = self._file["blocks"].create_group(name)
             group.attrs["role"] = role
             group.attrs["index"] = int(index)
-            group.attrs["first_step"] = int(self._file.attrs["num_steps"])
+            group.attrs["first_step"] = self._last_complete_step
             group.attrs["data_domain"] = grid.data_domain
             _write_wdm_grid(group.attrs, grid.wdm_grid)
             encoded.schema.write(group.attrs)
@@ -405,13 +406,9 @@ class _Recorder:
                     del self._file["blocks"][name]
             raise
 
-    def _latch(self, error: BaseException, steps: int | None = None) -> None:
+    def _latch(self, error: BaseException) -> None:
+        """Refuse every later write; the message names the last complete step."""
         self._failed = error
-        if steps is not None:
-            self._failed_at_step = steps
-            return
-        with contextlib.suppress(Exception):
-            self._failed_at_step = int(self._file.attrs["num_steps"])
 
     def append_step(self, pending: dict[str, _Encoded]) -> None:
         """Append one entry per registered block and commit the step."""
@@ -426,17 +423,19 @@ class _Recorder:
                 raise RuntimeError(
                     f"{name}: the entry was encoded for another block's schema"
                 )
-        # The step count before the append: the in-memory count may run one ahead
-        # of what a failed flush left on disk.
-        steps = int(self._file.attrs["num_steps"])
         try:
             blocks = self._file["blocks"]
             for name, encoded in pending.items():
                 self._append_entry(blocks[name], encoded)
-            self._file.attrs["num_steps"] = steps + 1
+            self._file.attrs["num_steps"] = self._last_complete_step + 1
             self._file.flush()
+            self._last_complete_step += 1
         except BaseException as error:
-            self._latch(error, steps)
+            self._latch(error)
+            # Keep close() from flushing a step count ahead of the message; the
+            # reader bounds every chain by num_steps, so extra entries are ignored.
+            with contextlib.suppress(Exception):
+                self._file.attrs["num_steps"] = self._last_complete_step
             raise
 
     @staticmethod

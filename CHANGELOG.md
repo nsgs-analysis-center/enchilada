@@ -24,7 +24,8 @@ All notable changes to enchilada are documented here. The format follows
 - `examples/mojito_wdm_wheel.py`: fits a Mojito window to a WDM grid
   (`fit_window`), loads and decimates it, translates it to WDM and serves a
   diagnostic block on that grid; the Wheel side of the Mojito story.
-- Optional extra `mojito` (h5py) for loading data without lisaorbits.
+- Optional extra `mojito`, which adds nothing beyond the core (h5py is a core
+  dependency); kept so `enchilada[mojito]` installs.
 - `Block.initial_sample(conditional_residual, covariance, *, rng)`: every
   block draws or constructs its own start. `Wheel.add` calls it once with the
   observations minus the starts of the blocks registered so far, on the
@@ -59,33 +60,35 @@ All notable changes to enchilada are documented here. The format follows
   `# EDIT` methods the author replaces; `block.ipynb` and `wheel.ipynb`
   exercise it by hand, through `check_block` and in a short campaign;
   `tests/test_forge.py` runs all of it on a synthetic Mojito-layout file.
-- `Block.state_from_parameters(parameters, reference_data)`: every block
-  rebuilds its complete physical state from one parameter set on the block's
-  grid, from the parameters and its configuration alone. `Wheel.add` refuses a
-  block without it with `TypeError`; `check_block` rebuilds the block under
-  test after registration and after every cycle and requires the result to
-  match the published state to a relative 1e-9.
+- `Block.state_from_parameters(parameters, reference_data)`: rebuilds a
+  block's complete physical state on its grid from one parameter set and the
+  block's configuration, so a campaign file can hold parameters alone.
+  `Wheel.add` refuses a block without it with `TypeError`; `check_block`
+  rebuilds the block under test after registration and after every cycle and
+  requires the result to match the published state to a relative 1e-9.
 - `Wheel(observed_data, *, random_seed=None, output_path=None)`: with a path
-  the Wheel records the campaign to an HDF5 file it creates (an existing file
-  is refused): every block's parameters at registration and after each
+  the Wheel records the campaign to an HDF5 file it creates (an existing path
+  raises `FileExistsError`): every block's parameters at registration and after each
   complete cycle, flushed before `on_cycle_complete`, under a global step
-  counter. `wheel.l2` is the live view, `Wheel.close()` and `with Wheel(...)`
-  close the file. Recorded parameters must be numeric with a key set, dtype
+  counter. `wheel.l2` is the live view; `Wheel.close()` or a `with Wheel(...)` block
+  closes the file. Recorded parameters must be numeric with a key set, dtype
   kind and dimension count fixed at registration; shapes may change per step.
 - `L2Data`: the read-only view of a campaign file. `L2Data.open(path, *,
-  observed_data=None)`, `num_steps`, `block_names`, `role`, `first_step`,
-  `block_grid`, `parameters(name, step=-1)`, `chain(name, key)`,
-  `entries(name, key)`, `states(step, blocks)`, `covariance(step, blocks)`,
-  `residual(step, blocks)`.
-- `run_toy_fit(output_path=...)` reads its chains from the campaign file;
+  observed_data=None)`; metadata (`num_steps`, `block_names`, `role`,
+  `first_step`, `block_grid`); recorded values (`parameters`, `chain`,
+  `entries`); rebuilt states (`states`, `covariance`, `residual(step,
+  blocks)`).
+- The examples (`toy_fit.py` via `run_toy_fit(output_path=...)`,
+  `noise_floor.py`, the Block authoring tutorial, `forge/wheel.ipynb`) record
+  their campaigns and read chains back from the file;
   `benchmarks/benchmark_wheel.py --record` measures recording overhead.
 
 ### Changed
 
-- **Breaking:** `state_from_parameters` is required of every block and checked
-  at `Wheel.add`.
-- **Breaking:** h5py is a core dependency (the Wheel writes HDF5); the `mojito`
-  extra is no longer needed to read Mojito files.
+- **Breaking:** every existing block must implement `state_from_parameters`;
+  verify it with `check_block`.
+- **Breaking:** h5py is a core dependency (the Wheel writes HDF5), so Mojito
+  loading and `NumericOrbit.from_hdf5` need no extra.
 - **Breaking:** the core depends on `numpy>=2.1`, `scipy>=1.14.1` and
   `domania>=3.0,<4`; every WDM conversion goes through domania. The WDM
   coefficient layout is domania's folded `(num_frequency_divisions,

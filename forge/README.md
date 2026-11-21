@@ -29,8 +29,8 @@ this folder assumes you have read it.
 
 ## Setup
 
-From the repository root (`numeric-orbits` brings, through
-lisaorbits, matplotlib; `examples` brings JupyterLab):
+From the repository root (`numeric-orbits` brings matplotlib
+through lisaorbits; `examples` brings JupyterLab):
 
 ```sh
 uv sync --extra numeric-orbits --extra examples

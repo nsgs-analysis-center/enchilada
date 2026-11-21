@@ -399,6 +399,11 @@ class TestRecorder:
             rec.encode("a", "sample", {"x": 4.0}, registering=False)
         monkeypatch.undo()
         rec.close()
+        with h5py.File(tmp_path / "campaign.h5", "r") as file:
+            assert int(file.attrs["num_steps"]) == 1
+        with L2Data.open(tmp_path / "campaign.h5") as l2:
+            assert l2.num_steps == 1
+            assert l2.chain("a", "x").shape == (2,)
 
     def test_a_failed_add_block_leaves_no_partial_group(
         self, tmp_path, observed, monkeypatch
