@@ -8,7 +8,7 @@ from enchilada._transforms import transform_channels
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
-from enchilada.domains import WDMGrid, resolve_wdm_grid
+from enchilada.domains import Grid, WDMGrid, resolve_wdm_grid
 
 
 def _target_grid(
@@ -158,3 +158,44 @@ def transform(
             )
         return replace(source_state, template=signal)
     raise TypeError("transform expects L1Data or BlockState")
+
+
+def _data_on_grid(data: L1Data, grid: Grid) -> L1Data:
+    """`data` on `grid`: itself when already there, else its translation."""
+    if data.grid == grid:
+        return data
+    return transform(
+        data,
+        grid.data_domain,
+        num_frequency_divisions=(
+            None if grid.wdm_grid is None else grid.wdm_grid.num_frequency_divisions
+        ),
+    )
+
+
+@overload
+def _state_on_grid(
+    state: BlockState, grid: Grid, *, reference_data: L1Data
+) -> BlockState: ...
+
+
+@overload
+def _state_on_grid(state: object, grid: Grid, *, reference_data: L1Data) -> object: ...
+
+
+def _state_on_grid(state: object, grid: Grid, *, reference_data: L1Data) -> object:
+    """A block state built on `reference_data`'s grid, moved to `grid`.
+
+    Anything that is not a BlockState passes through so the caller can raise
+    its own error; a state already on `grid` is returned as it is.
+    """
+    if not isinstance(state, BlockState) or reference_data.grid == grid:
+        return state
+    return transform(
+        state,
+        grid.data_domain,
+        reference_data=reference_data,
+        num_frequency_divisions=(
+            None if grid.wdm_grid is None else grid.wdm_grid.num_frequency_divisions
+        ),
+    )

@@ -14,7 +14,7 @@ from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid
 from enchilada.ledger import Ledger
-from enchilada.translation import _target_grid, transform
+from enchilada.translation import _data_on_grid, _state_on_grid, _target_grid
 
 Role = Literal["signal", "noise"]
 ROLES: tuple[Role, ...] = ("signal", "noise")
@@ -283,12 +283,7 @@ class Wheel:
             if registered
             else self.working_residual
         )
-        if block_grid != self._observed_data.grid:
-            conditional_residual = transform(
-                conditional_residual,
-                block_grid.data_domain,
-                num_frequency_divisions=self._frequency_divisions(block_grid),
-            )
+        conditional_residual = _data_on_grid(conditional_residual, block_grid)
         if role == "noise" and registered:
             total = self._noise_sum.excluding(self._block_indices[block_name])
         else:
@@ -298,20 +293,9 @@ class Wheel:
         covariance = None if total is None else deepcopy(total)
         return conditional_residual, covariance
 
-    @staticmethod
-    def _frequency_divisions(grid: Grid) -> int | None:
-        if grid.wdm_grid is None:
-            return None
-        return grid.wdm_grid.num_frequency_divisions
-
     def _canonical_state(self, state: object, source_reference: L1Data) -> object:
-        if not isinstance(state, BlockState):
-            return state  # _adopt supplies the block/method-specific error.
-        return transform(
-            state,
-            self._observed_data.data_domain,
-            reference_data=source_reference,
-            num_frequency_divisions=self._frequency_divisions(self._observed_data.grid),
+        return _state_on_grid(
+            state, self._observed_data.grid, reference_data=source_reference
         )
 
     def run(
@@ -349,13 +333,9 @@ class Wheel:
                 )
                 current_block_state = self._ledger[block_name]
                 translated = block_grid != self._observed_data.grid
-                if translated:
-                    current_block_state = transform(
-                        current_block_state,
-                        block_grid.data_domain,
-                        reference_data=self._observed_data,
-                        num_frequency_divisions=self._frequency_divisions(block_grid),
-                    )
+                current_block_state = _state_on_grid(
+                    current_block_state, block_grid, reference_data=self._observed_data
+                )
                 new_block_state: object = block.sample(
                     conditional_residual=conditional_residual,
                     covariance=covariance,
