@@ -12,15 +12,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytest.importorskip("h5py", reason="the forge loads Mojito-layout files with h5py")
-
-from conftest import (  # noqa: E402
+from conftest import (
     MOJITO_DT,
     MOJITO_T0,
     white_covariance,
     write_mojito_file,
 )
-from enchilada import Covariance, L1Data, decimate, load_mojito_l1, transform  # noqa: E402
+from enchilada import Covariance, L1Data, decimate, load_mojito_l1, transform
 
 FORGE = Path(__file__).resolve().parents[1] / "forge"
 FILE_SAMPLES = 4096  # 1024 s at the fixture's 4 Hz

@@ -60,8 +60,8 @@ jobs:
 
   # The core is numpy, scipy, domania and h5py. Prove it imports and tests on
   # every supported interpreter, including 3.14 (which the LISA dev stack runs);
-  # the lisaorbits-loader and translation-notebook tests skip without lisaorbits
-  # and matplotlib.
+  # the lisaorbits-loader and notebook tests skip without lisaorbits and
+  # matplotlib.
   core-only:
     runs-on: ubuntu-latest
     strategy:
@@ -111,7 +111,7 @@ jobs:
           assert scipy.__version__ == "1.14.1", scipy.__version__
           assert domania.__version__ == "3.0.0", domania.__version__
           assert h5py.__version__ == "3.12.1", h5py.__version__
-          assert importlib.util.find_spec("lisaorbits") is None
+          assert importlib.util.find_spec("lisaorbits") is None, "lisaorbits"
           print("core minimum: NumPy", numpy.__version__, "SciPy", scipy.__version__,
                 "domania", domania.__version__, "h5py", h5py.__version__)
           PY

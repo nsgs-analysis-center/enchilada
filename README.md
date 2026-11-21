@@ -741,7 +741,7 @@ CI runs lint, formatting, mypy, the suite behind a 95% coverage gate, artifact
 builds, and an installed-wheel smoke test across Python 3.12/3.13 on Linux and
 macOS, with core-only checks through Python 3.14. A separate Python 3.12 job tests
 the core at its dependency floors (NumPy 2.1.0, SciPy 1.14.1, domania 3.0.0)
-without h5py or lisaorbits; another job resolves the numeric-orbit and mojito
+without lisaorbits; another job resolves the numeric-orbit and mojito
 dependency floors. Tag pushes matching `v*` run these gates before PyPI Trusted
 Publishing. Manual release dispatches build and validate artifacts without
 publishing, including on tags. See

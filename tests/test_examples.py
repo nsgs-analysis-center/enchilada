@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
@@ -348,7 +349,6 @@ def test_toy_starts_require_time_data(make_block):
 
 
 def test_load_mojito_example_reads_a_synthetic_file(tmp_path, capsys):
-    pytest.importorskip("h5py", reason="the Mojito loader needs h5py")
     from conftest import write_mojito_file
 
     path = tmp_path / "mojito.h5"
@@ -374,7 +374,6 @@ def test_load_mojito_example_reads_a_synthetic_file(tmp_path, capsys):
 
 
 def test_mojito_wdm_wheel_example_builds_a_wdm_wheel(tmp_path, capsys):
-    pytest.importorskip("h5py", reason="the Mojito loader needs h5py")
     from conftest import MOJITO_T0, write_mojito_file
     from enchilada import WDMGrid
 
@@ -442,7 +441,6 @@ REAL_MOJITO_FILE = os.environ.get("ENCHILADA_MOJITO_L1")
 def test_mojito_wdm_wheel_example_on_the_real_file(capsys):
     """A week at Nf = 512: 2,416,640 native samples per channel, decimated by 10
     to 512 x 472 WDM coefficients. Takes about a second on the Mojito Light file."""
-    h5py = pytest.importorskip("h5py")
     from enchilada import WDMGrid
 
     with h5py.File(REAL_MOJITO_FILE, "r") as f:

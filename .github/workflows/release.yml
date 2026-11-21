@@ -92,7 +92,7 @@ jobs:
           assert scipy.__version__ == "1.14.1", scipy.__version__
           assert domania.__version__ == "3.0.0", domania.__version__
           assert h5py.__version__ == "3.12.1", h5py.__version__
-          assert importlib.util.find_spec("lisaorbits") is None
+          assert importlib.util.find_spec("lisaorbits") is None, "lisaorbits"
           print("core minimum: NumPy", numpy.__version__, "SciPy", scipy.__version__,
                 "domania", domania.__version__, "h5py", h5py.__version__)
           PY
