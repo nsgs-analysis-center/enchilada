@@ -968,7 +968,67 @@ class TestL2DataReview:
             group = file.create_group("blocks/ghost")
             group.attrs["index"] = 5
             group.attrs["num_entries"] = 0
+            file.create_group("blocks/bare").attrs["role"] = "signal"
         with L2Data.open(path) as l2:
             assert l2.block_names == ("a", "late")
             with pytest.raises(ValueError, match="unknown block"):
+                l2.first_step("bare")
+            with pytest.raises(ValueError, match="unknown block"):
                 l2.role("ghost")
+
+
+class TestL2DataFollowUps:
+    def test_residual_is_float64_for_a_float32_observation(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+        single = replace(
+            observed,
+            channel_data={
+                ch: v.astype(np.float32) for ch, v in observed.channel_data.items()
+            },
+        )
+
+        class Wide(Amplitude):
+            def _state(self, data, amplitude):
+                return data.block_state(
+                    {
+                        ch: np.full(arr.shape, amplitude)
+                        for ch, arr in data.channel_data.items()
+                    },
+                    parameters={"amplitude": float(amplitude)},
+                )
+
+        with L2Data.open(path, observed_data=single) as l2:
+            result = l2.residual(3, [Wide("a", 1.0), late])
+        assert all(v.dtype == np.float64 for v in result.channel_data.values())
+
+    def test_an_unrecognised_role_is_refused_everywhere(self, tmp_path, observed):
+        path, a, late = written_file(tmp_path, observed)
+        with h5py.File(path, "r+") as file:
+            file["blocks/late"].attrs["role"] = "mystery"
+        with L2Data.open(path, observed_data=observed) as l2:
+            with pytest.raises(ValueError, match="unknown role 'mystery'"):
+                l2.covariance(3, [a, late])
+            with pytest.raises(ValueError, match="unknown role 'mystery'"):
+                l2.residual(3, [a, late])
+
+    def test_add_block_refuses_an_unknown_role(self, tmp_path, observed):
+        rec = recorder(tmp_path, observed)
+        encoded = rec.encode(
+            "x", "initial_sample", {"amplitude": 1.0}, registering=True
+        )
+        with pytest.raises(ValueError, match="block 'x' has role 'loud'"):
+            rec.add_block(
+                "x", role="loud", index=0, grid=observed.grid, encoded=encoded
+            )
+        rec.close()
+
+    def test_the_orbit_hint_only_shows_without_observed_data(self, tmp_path, observed):
+        path, _, _ = written_file(tmp_path, observed)
+        with L2Data.open(path) as l2:
+            with pytest.raises(RuntimeError) as bare:
+                l2.states(1, [Raises("a", 1.0)])
+        with L2Data.open(path, observed_data=observed) as l2:
+            with pytest.raises(RuntimeError) as attached:
+                l2.states(1, [Raises("a", 1.0)])
+        assert "attach observed_data" in bare.value.__notes__[0]
+        assert "attach observed_data" not in attached.value.__notes__[0]

@@ -331,6 +331,10 @@ class _Recorder:
     ) -> None:
         """Create the block's group and datasets and write its start as entry 0."""
         self._require_writable()
+        if role not in ("signal", "noise"):
+            raise ValueError(
+                f"block {name!r} has role {role!r}; it must be 'signal' or 'noise'"
+            )
         group = None
         try:
             group = self._file["blocks"].create_group(name)
@@ -542,7 +546,7 @@ class L2Data:
         found = [
             (int(group.attrs["index"]), name, group)
             for name, group in blocks.items()
-            if int(group.attrs["num_entries"]) >= 1
+            if int(group.attrs.get("num_entries", 0)) >= 1
         ]
         return [(name, group) for _, name, group in sorted(found, key=lambda t: t[0])]
 
@@ -566,7 +570,7 @@ class L2Data:
         """Read a block's group attributes once."""
         blocks = self._require_open()["blocks"]
         group = blocks[name] if name in blocks else None
-        if group is None or int(group.attrs["num_entries"]) < 1:
+        if group is None or int(group.attrs.get("num_entries", 0)) < 1:
             raise ValueError(
                 f"unknown block {name!r}; recorded: {list(self.block_names)}"
             )
@@ -758,7 +762,6 @@ class L2Data:
 
     def _rebuild(self, resolved: int, named: dict[str, Block]) -> dict[str, BlockState]:
         """Rebuild each block's state at the resolved step, in the order given."""
-        self._check_known(named)
         observation_grid = self.observation_grid
         obs_attrs = self._require_open()["observation"].attrs
         # Resolve every block before rebuilding any: a late block fails first.
@@ -782,9 +785,13 @@ class L2Data:
             try:
                 rebuilt = block.state_from_parameters(parameters, reference)
             except Exception as error:
+                hint = (
+                    "; attach observed_data if the block needs the orbit"
+                    if self._observed is None
+                    else ""
+                )
                 error.add_note(
-                    f"while L2Data rebuilt {name!r} at step {resolved}; attach "
-                    "observed_data if the block needs the orbit"
+                    f"while L2Data rebuilt {name!r} at step {resolved}{hint}"
                 )
                 raise
             label = f"{name}.state_from_parameters"
@@ -841,7 +848,9 @@ class L2Data:
         must be recorded at `step`.
         """
         resolved = self._resolve_step(step)
-        return self._rebuild(resolved, self._named(blocks, "states"))
+        named = self._named(blocks, "states")
+        self._check_known(named)
+        return self._rebuild(resolved, named)
 
     def _required(
         self,
@@ -854,7 +863,7 @@ class L2Data:
         needed = [
             name
             for name, group in self._listed()
-            if group.attrs["role"] == role
+            if self._role_of(group, name) == role
             and int(group.attrs["first_step"]) <= resolved
         ]
         missing = [name for name in needed if name not in named]
@@ -903,6 +912,6 @@ class L2Data:
         for state in self._rebuild(resolved, needed).values():
             if state.template is None:
                 continue
-            for name, array in channel_data.items():
-                array -= state.template[name]
+            for name in channel_data:
+                channel_data[name] = channel_data[name] - state.template[name]
         return replace(self._observed, channel_data=channel_data)
