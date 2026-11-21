@@ -98,8 +98,9 @@ class Block(Protocol):
         `reference_data`'s channel values, a random stream or state that
         `sample` changes. `reference_data` is on the block's registered grid,
         the grid `sample` receives. Read back from a campaign file, a float
-        arrives as `np.float64` and a list as an ndarray, so avoid list
-        operations and `isinstance(x, float)`. The simplest way to meet
+        arrives as `np.float64`, an int as `np.int64`, a bool as `np.bool_` and
+        a list as an ndarray, so avoid list operations and `isinstance(x, int)`
+        or `isinstance(x, bool)`. The simplest way to meet
         `check_block`'s 1e-9 round trip is for `initial_sample` and `sample` to
         end by calling this method. `L2Data` uses it to turn recorded
         parameters back into states and residuals; the Wheel never calls it

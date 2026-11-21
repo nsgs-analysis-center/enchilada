@@ -11,6 +11,7 @@ from enchilada.block import Block
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
+from enchilada.l2 import STORED_DTYPES
 from enchilada.wheel import Role, Wheel
 
 
@@ -104,8 +105,8 @@ def _zeroed(data: L1Data) -> L1Data:
 
     `state_from_parameters` may read only grid metadata, so the round trip
     hands it a reference whose values would betray a block that reads them:
-    `L2Data` rebuilds states from exactly such a reference, so a rebuild that
-    reads channel values fails here.
+    `L2Data` rebuilds states from exactly such a reference when no observation
+    is attached, so a rebuild that reads channel values fails here.
     """
     return replace(
         data,
@@ -121,12 +122,21 @@ def _as_read_back(parameters: dict[str, Any]) -> dict[str, Any]:
     A fresh copy every time, so a rebuild that mutates its argument cannot
     disturb the next check. Values a campaign file cannot hold (strings,
     nested dicts) pass through as deep copies; the file would have refused
-    them before this point.
+    them when they are published.
     """
     read_back: dict[str, Any] = {}
     for key, value in parameters.items():
-        array = np.array(value)
-        read_back[key] = array[()] if array.dtype.kind in "biufc" else deepcopy(value)
+        try:
+            array = np.array(value)
+        except ValueError:  # a ragged list: allowed in memory, not recordable
+            read_back[key] = deepcopy(value)
+            continue
+        if array.dtype.kind in STORED_DTYPES:
+            read_back[key] = np.asarray(array, dtype=STORED_DTYPES[array.dtype.kind])[
+                ()
+            ]
+        else:
+            read_back[key] = deepcopy(value)
     return read_back
 
 
@@ -147,7 +157,7 @@ def _check_round_trip(
             num_time_samples=reference.num_time_samples,
             data_domain=reference.data_domain,
             wdm_grid=reference.wdm_grid,
-            context_label=f"{block.name}.state_from_parameters template at {where}",
+            context_label=f"{block.name}.state_from_parameters at {where}: template",
         )
     published, again = entry.template or {}, rebuilt.template or {}
     if set(published) != set(again):
@@ -169,7 +179,9 @@ def _check_round_trip(
         f"covariance at {where}"
     )
     if noise is None and noise_again is not None:
-        raise ValueError(f"{prefix}: it rebuilt a covariance but published none")
+        raise ValueError(
+            f"{prefix}: the rebuild has one but the published state has none"
+        )
     if noise is not None:
         if noise_again is None:
             raise ValueError(f"{prefix}: the rebuild has none")
@@ -206,12 +218,13 @@ def check_block(
     Covariance. After registration (step 0) and after every cycle it also calls
     the block's ``state_from_parameters`` with the ledger entry's parameters,
     handed over as numpy scalars and arrays as a campaign file returns them, and
-    a zero-valued copy of the observation (grid metadata only, which is what
-    ``L2Data`` supplies), so a rebuild that reads channel values fails. It
+    a zero-valued copy of the observation (grid metadata only, as ``L2Data`` does
+    when no observation is attached), so a rebuild that reads channel values fails. It
     requires the result to reproduce the published template and covariance to a
     relative 1e-9. After the run it rebuilds the step-0 entry once more, so a
     rebuild that depends on the block's own sampling state fails too. It raises
-    ``TypeError`` for a result that is not a ``BlockState``, and otherwise
+    ``TypeError`` for a result that is not a ``BlockState`` or a template of the
+    wrong kind, and otherwise
     ``ValueError`` naming the block, the step and (for a template) the channel:
     the published parameters must determine the published state.
 

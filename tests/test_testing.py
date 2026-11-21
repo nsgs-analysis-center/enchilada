@@ -381,7 +381,7 @@ class TestRoundTrip:
     def test_round_off_is_tolerated_but_a_real_difference_is_not(
         self, observed, error, passes
     ):
-        class Thirds(_Publishing):
+        class Scaled(_Publishing):
             name = "thirds"
 
             def _state(self, data, amplitude=0.3):
@@ -397,12 +397,12 @@ class TestRoundTrip:
                 )
 
         if passes:
-            check_block(Thirds(), observed, role="signal")
+            check_block(Scaled(), observed, role="signal")
         else:
             with pytest.raises(
                 ValueError, match="published template in channel 'A' at step 0"
             ):
-                check_block(Thirds(), observed, role="signal")
+                check_block(Scaled(), observed, role="signal")
 
     def test_an_all_zero_channel_tolerates_nothing(self, observed):
         class Silent(_Publishing):
@@ -426,11 +426,16 @@ class TestRoundTrip:
         ):
             check_block(Silent(), observed, role="signal")
 
-    def test_a_quiet_covariance_channel_is_checked_on_its_own_scale(self, observed):
+    @pytest.mark.parametrize(
+        ("rebuilt", "passes"), [(1e-12 * (1 + 1e-12), True), (2e-12, False)]
+    )
+    def test_a_quiet_covariance_channel_is_checked_on_its_own_scale(
+        self, observed, rebuilt, passes
+    ):
         n = observed.num_time_samples
 
-        class Loud(_Publishing):
-            name = "loud"
+        class QuietT(_Publishing):
+            name = "quiet_t"
 
             def _state(self, data, quiet=1e-12):
                 return data.block_state().with_covariance(
@@ -441,10 +446,13 @@ class TestRoundTrip:
                 )
 
             def state_from_parameters(self, parameters, reference_data):
-                return self._state(reference_data, 2e-12)
+                return self._state(reference_data, rebuilt)
 
-        with pytest.raises(ValueError, match="published covariance at step 0"):
-            check_block(Loud(), observed, role="noise")
+        if passes:
+            check_block(QuietT(), observed, role="noise")
+        else:
+            with pytest.raises(ValueError, match="published covariance at step 0"):
+                check_block(QuietT(), observed, role="noise")
 
     def test_a_rebuild_that_reads_the_block_state_is_caught(self, observed):
         class Remembering(_Amplitude):
@@ -516,17 +524,22 @@ class TestRoundTrip:
 
     def test_the_rebuild_receives_file_typed_parameters(self, observed):
         class Typed(_Amplitude):
-            def _state(self, data, amplitude=None):
-                state = super()._state(data)
-                return BlockState(
-                    template=state.template,
-                    parameters={"amplitude": 0.5, "weights": [1.0, 2.0]},
+            def _state(self, data, amplitude=0.5, weights=(1.0, 2.0)):
+                level = amplitude * float(np.sum(weights))
+                return data.block_state(
+                    {
+                        ch: np.full(len(arr), level)
+                        for ch, arr in data.channel_data.items()
+                    },
+                    parameters={"amplitude": amplitude, "weights": list(weights)},
                 )
 
             def state_from_parameters(self, parameters, reference_data):
                 assert isinstance(parameters["amplitude"], np.floating)
                 assert isinstance(parameters["weights"], np.ndarray)
-                return self._state(reference_data)
+                return self._state(
+                    reference_data, parameters["amplitude"], parameters["weights"]
+                )
 
         check_block(Typed(), observed, role="signal")
 
