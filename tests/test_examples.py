@@ -49,6 +49,36 @@ def test_toy_fit_converges_to_truth():
         )
 
 
+def test_toy_fit_records_its_campaign(tmp_path):
+    from enchilada import L2Data
+
+    toy = load_example("toy_fit")
+    results = toy.run_toy_fit(
+        n_cycles=20, burn_in=5, seed=0, output_path=tmp_path / "toy.h5"
+    )
+    assert set(results) == {"slow", "fast", "noise"}
+    with L2Data.open(tmp_path / "toy.h5") as l2:
+        assert l2.block_names == ("slow", "fast", "noise")
+        assert l2.num_steps == 20
+        chain = l2.chain("slow", "amplitude")
+        assert chain.shape == (21,)
+        assert results["slow"][0] == pytest.approx(float(chain[6:].mean()))
+
+
+def test_toy_blocks_pass_check_block():
+    from enchilada.testing import check_block
+
+    toy = load_example("toy_fit")
+    data = toy.make_observed()
+    check_block(toy.WhiteNoiseBlock("noise"), data, role="noise")
+    check_block(
+        toy.SineBlock("slow", 0.004),
+        data,
+        role="signal",
+        noise_blocks=(toy.WhiteNoiseBlock("noise"),),
+    )
+
+
 def test_notebook_code_cells_execute():
     nb = json.loads((EXAMPLES / "demo.ipynb").read_text())
     code = "\n\n".join(

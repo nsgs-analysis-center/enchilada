@@ -23,9 +23,9 @@ this folder assumes you have read it.
    `FixedNoiseBlock`. Edits to `block.py` take effect cell by cell.
 3. **Run `wheel.ipynb`.** A `Wheel` on the same window, the covariance
    registered as a `FixedNoiseBlock` (`role="noise"`), the block registered
-   on its grid with `role="signal"`, a chain collected through
-   `on_cycle_complete`, the posterior against a truth you type in, and a
-   trace plot.
+   on its grid with `role="signal"`, the campaign file the
+   Wheel writes (`output_path`), the posterior read from `wheel.l2` against a
+   truth you type in, and a trace plot.
 
 ## Setup
 
@@ -65,7 +65,7 @@ block), a complete state after a rejection too, parameters from which
 `state_from_parameters` alone rebuilds that state (publish through it, as the
 placeholder does), draws from the supplied `rng`, diagnostics on `block.state`
 rather than in the ledger, and a fresh instance per campaign.
-Collect chains outside the block, as `wheel.ipynb` does. In
+Chains come from the campaign file, as `wheel.ipynb` shows. In
 the notebooks, change the settings cells and the lines marked `# EDIT` (the
 block's constructor, `TRUTH`); the asserts are the contract and name no
 parameter of the placeholder. Keep `State.num_sample_calls`: `block.ipynb`

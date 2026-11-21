@@ -3,21 +3,22 @@
 Blocks retain fixed model configuration. Wheel owns the current parameters,
 BlockState snapshots, the noise sum, and the sampling random stream. Each block
 draws its own start from its prior in initial_sample, with the RNG Wheel passes
-at registration; an on_cycle_complete callback collects posterior chains outside
-the blocks. The sine blocks register as signal blocks and the white-noise block
-as the one noise block, so the sines receive exactly its covariance and the
-noise block itself receives None because it is alone. Each block also
-implements state_from_parameters, which rebuilds its state from a parameter
-set. These
-blocks request time-domain inputs; Wheel also runs them on Fourier or WDM
-observations with data_domain="time", because the noise block publishes its
-covariance on that time grid. Their likelihood requires time-domain noise with
-independent channels.
+at registration; the Wheel records every block's parameters to a campaign file
+and the chains are read back from it with `wheel.l2`. The sine blocks register
+as signal blocks and the white-noise block as the one noise block, so the sines
+receive exactly its covariance and the noise block itself receives None because
+it is alone. Each block also implements state_from_parameters, which rebuilds its
+state from a parameter set. These blocks request time-domain inputs; Wheel also
+runs them on Fourier or WDM observations with data_domain="time", because the
+noise block publishes its covariance on that time grid. Their likelihood
+requires time-domain noise with independent channels.
 Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -206,39 +207,63 @@ def make_observed(seed: int = 0) -> L1Data:
     )
 
 
-def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
-    """Run the fit; return {name: (posterior_mean, posterior_std)}."""
+def run_toy_fit(
+    n_cycles: int = 300,
+    burn_in: int = 100,
+    seed: int = 0,
+    *,
+    output_path: str | Path | None = None,
+):
+    """Run the fit; return {name: (posterior_mean, posterior_std)}.
+
+    The Wheel records every block's parameters to `output_path` (an HDF5 file it
+    creates; None uses a temporary directory removed at return) and the chains
+    are read back from that file: no collection callback is needed.
+    """
     if not 0 <= burn_in < n_cycles:
         raise ValueError("burn_in must be nonnegative and smaller than n_cycles")
+    if output_path is None:
+        with tempfile.TemporaryDirectory() as directory:
+            return _fit(n_cycles, burn_in, seed, Path(directory) / "toy_fit.h5")
+    return _fit(n_cycles, burn_in, seed, Path(output_path))
+
+
+def _fit(n_cycles: int, burn_in: int, seed: int, output_path: Path):
     observed = make_observed(seed)
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
     campaign_seed = np.random.SeedSequence(seed).spawn(1)[0]
-    wheel = Wheel(observed, random_seed=int(campaign_seed.generate_state(1)[0]))
-    # The sine starts need no covariance, so the signal blocks may register first.
-    for name, frequency in (("slow", 0.004), ("fast", 0.011)):
-        wheel.add(
-            SineBlock(name=name, freq=frequency), role="signal", data_domain="time"
-        )
-    wheel.add(WhiteNoiseBlock(name="noise"), role="noise", data_domain="time")
-    chains: dict[str, list[float]] = {name: [] for name in ("slow", "fast", "noise")}
-
-    def collect(cycle: int, w: Wheel) -> None:
-        for name in chains:
-            parameter = "sigma" if name == "noise" else "amplitude"
-            chains[name].append(w.ledger[name].parameters[parameter])
-        if (cycle + 1) % 100 == 0:
-            rms = float(np.sqrt(np.mean(w.residual().channel_data["A"] ** 2)))
-            print(
-                f"cycle {cycle + 1:4d}: full-residual RMS = {rms:.4f}  "
-                f"(sigma draw = {chains['noise'][-1]:.4f})"
+    with Wheel(
+        observed,
+        random_seed=int(campaign_seed.generate_state(1)[0]),
+        output_path=output_path,
+    ) as wheel:
+        # The sine starts need no covariance, so the signal blocks may register first.
+        for name, frequency in (("slow", 0.004), ("fast", 0.011)):
+            wheel.add(
+                SineBlock(name=name, freq=frequency), role="signal", data_domain="time"
             )
+        wheel.add(WhiteNoiseBlock(name="noise"), role="noise", data_domain="time")
 
-    wheel.run(n_cycles, on_cycle_complete=collect)
-    results = {}
-    for name, samples in chains.items():
-        chain = np.asarray(samples[burn_in:])
-        results[name] = (float(chain.mean()), float(chain.std()))
+        def report(cycle: int, w: Wheel) -> None:
+            if (cycle + 1) % 100 == 0:
+                rms = float(np.sqrt(np.mean(w.residual().channel_data["A"] ** 2)))
+                sigma = w.ledger["noise"].parameters["sigma"]
+                print(
+                    f"cycle {cycle + 1:4d}: full-residual RMS = {rms:.4f}  "
+                    f"(sigma draw = {sigma:.4f})"
+                )
+
+        wheel.run(n_cycles, on_cycle_complete=report)
+        results = {}
+        for name, key in (
+            ("slow", "amplitude"),
+            ("fast", "amplitude"),
+            ("noise", "sigma"),
+        ):
+            # Entry 0 is the start; entries 1..n_cycles follow the cycles.
+            chain = wheel.l2.chain(name, key)[burn_in + 1 :]
+            results[name] = (float(chain.mean()), float(chain.std()))
     return results
 
 
