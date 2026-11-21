@@ -38,6 +38,9 @@ dependencies = [
     "numpy>=2.1",
     "scipy>=1.14.1",
     "domania>=3.0,<4",
+    # The Wheel writes its campaign output file with h5py; 3.12.1 is lisaorbits'
+    # own floor and the first release with NumPy 2 wheels across our interpreters.
+    "h5py>=3.12.1",
 ]
 
 [project.urls]
