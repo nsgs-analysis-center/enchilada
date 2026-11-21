@@ -99,6 +99,27 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
     assert block.state.num_proposals == 2 * block.steps_per_call
 
 
+def test_tutorial_noise_block_passes_check_block(tutorial_definitions):
+    import numpy as np
+
+    from enchilada import L1Data
+    from enchilada.testing import check_block
+
+    data = L1Data(
+        channel_data={"A": np.zeros(64)},
+        channel_names=("A",),
+        sample_rate_hz=1.0,
+        tdi_generation="2.0",
+        physical_observable="fractional_frequency",
+    )
+    check_block(
+        tutorial_definitions.WhiteNoiseVarianceBlock(),
+        data,
+        num_cycles=3,
+        role="noise",
+    )
+
+
 def test_tutorial_rejection_returns_retained_signal_and_complete_state(
     tutorial_definitions,
 ):

@@ -10,8 +10,9 @@ this folder assumes you have read it.
 ## The three steps
 
 1. **Fill in `block.py`.** `ForgeBlock` marks five methods `# EDIT`. Three
-   are the model: `state_from_parameters` renders the signal on the block's grid from one parameter set,
-   `initial_sample` draws or renders the start, `sample` advances the state.
+   are the model: `state_from_parameters` renders the signal on the block's
+   grid from one parameter set, `initial_sample` draws or renders the start,
+   `sample` advances the state.
    Two are checks, `_check_residual` and `_check_covariance`, which say what
    the model needs from its inputs. The placeholder is a sinusoid of one amplitude on the
    frequency grid with a conjugate Gaussian sampler, so everything runs
@@ -56,13 +57,15 @@ callable `psd(f_hz)` or one per channel, into a `Covariance` on that grid.
 
 ## What to replace and what to keep
 
-Replace the model (`state_from_parameters`, `initial_sample`, `sample`) and the checks'
-expectations (the grid, what the likelihood needs from the covariance). Keep
-the shape of the contract: a `BlockState` with a template on the input grid
-and no covariance (a signal block's noise model is a separate noise block),
-a complete state after a rejection too, draws from the supplied `rng`,
-diagnostics on `block.state` rather than in the ledger, and a fresh instance
-per campaign. Collect chains outside the block, as `wheel.ipynb` does. In
+Replace the model (`state_from_parameters`, `initial_sample`, `sample`) and the
+checks' expectations (the grid, what the likelihood needs from the covariance).
+Keep the shape of the contract: a `BlockState` with a template on the input
+grid and no covariance (a signal block's noise model is a separate noise
+block), a complete state after a rejection too, parameters from which
+`state_from_parameters` alone rebuilds that state (publish through it, as the
+placeholder does), draws from the supplied `rng`, diagnostics on `block.state`
+rather than in the ledger, and a fresh instance per campaign.
+Collect chains outside the block, as `wheel.ipynb` does. In
 the notebooks, change the settings cells and the lines marked `# EDIT` (the
 block's constructor, `TRUTH`); the asserts are the contract and name no
 parameter of the placeholder. Keep `State.num_sample_calls`: `block.ipynb`
@@ -78,10 +81,10 @@ WDM also `NUM_FREQUENCY_DIVISIONS`, the row count: it and the decimated
 window length divided by it must both be even integers, so choose
 `FORGE_DURATION_S` to fit, or load with `load_window(..., domain="wdm",
 num_frequency_divisions=..., num_time_divisions=...)`, which derives the
-duration), render `state_from_parameters` on that grid, update `_check_residual`, and
-rewrite the likelihood in `sample` (`inner_product` is the frequency
-grid's). A signal block receives the sum of the noise blocks' covariances,
-which lives on one grid, so every block registers on that grid (a
+duration), render the signal in `state_from_parameters` on that grid, update
+`_check_residual`, and rewrite the likelihood in `sample` (`inner_product` is
+the frequency grid's). A signal block receives the sum of the noise blocks'
+covariances, which lives on one grid, so every block registers on that grid (a
 covariance does not translate between grids); another grid means moving
 `DOMAIN`, and with it the covariance, for the whole campaign.
 
