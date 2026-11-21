@@ -53,8 +53,9 @@ def test_toy_fit_records_its_campaign(tmp_path):
     from enchilada import L2Data
 
     toy = load_example("toy_fit")
+    burn_in = 5
     results = toy.run_toy_fit(
-        n_cycles=20, burn_in=5, seed=0, output_path=tmp_path / "toy.h5"
+        n_cycles=20, burn_in=burn_in, seed=0, output_path=tmp_path / "toy.h5"
     )
     assert set(results) == {"slow", "fast", "noise"}
     with L2Data.open(tmp_path / "toy.h5") as l2:
@@ -62,7 +63,9 @@ def test_toy_fit_records_its_campaign(tmp_path):
         assert l2.num_steps == 20
         chain = l2.chain("slow", "amplitude")
         assert chain.shape == (21,)
-        assert results["slow"][0] == pytest.approx(float(chain[6:].mean()))
+        assert results["slow"][0] == pytest.approx(float(chain[burn_in + 1 :].mean()))
+        sigma = l2.chain("noise", "sigma")
+        assert results["noise"][0] == pytest.approx(float(sigma[burn_in + 1 :].mean()))
 
 
 def test_toy_blocks_pass_check_block():

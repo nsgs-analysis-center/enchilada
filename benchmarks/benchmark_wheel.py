@@ -6,7 +6,10 @@ defensive snapshots and validation; these are measurements, not test thresholds.
 The workload is the fixed signals plus one FixedNoiseBlock, which republishes its
 covariance every cycle and is revalidated by Wheel each time, so timings are not
 comparable with runs from before the noise sum. `--record` measures the same
-workload while the Wheel records every cycle to a temporary campaign file.
+workload while the Wheel records every cycle to a temporary campaign file: each
+signal block publishes one parameter (`level`), so every cycle writes one value
+per signal block plus the file's bookkeeping and flush (the noise block
+publishes none).
 """
 
 import argparse
@@ -28,15 +31,17 @@ class FixedSignal:
         self.level = level
 
     def state_from_parameters(self, parameters, reference_data):
+        level = parameters["level"]
         return reference_data.block_state(
             {
-                name: np.full_like(values, self.level)
+                name: np.full_like(values, level)
                 for name, values in reference_data.channel_data.items()
-            }
+            },
+            parameters={"level": level},
         )
 
     def initial_sample(self, conditional_residual, covariance, *, rng):
-        return self.state_from_parameters({}, conditional_residual)
+        return self.state_from_parameters({"level": self.level}, conditional_residual)
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         return current_block_state

@@ -17,6 +17,7 @@ Run with:
     uv run --no-sync python examples/toy_fit.py
 """
 
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -212,13 +213,14 @@ def run_toy_fit(
     burn_in: int = 100,
     seed: int = 0,
     *,
-    output_path: str | Path | None = None,
-):
+    output_path: str | os.PathLike[str] | None = None,
+) -> dict[str, tuple[float, float]]:
     """Run the fit; return {name: (posterior_mean, posterior_std)}.
 
     The Wheel records every block's parameters to `output_path` (an HDF5 file it
-    creates; None uses a temporary directory removed at return) and the chains
-    are read back from that file: no collection callback is needed.
+    creates and refuses to overwrite: an existing file raises FileExistsError;
+    None uses a temporary directory removed at return) and the chains are read
+    back from that file: no collection callback is needed.
     """
     if not 0 <= burn_in < n_cycles:
         raise ValueError("burn_in must be nonnegative and smaller than n_cycles")
@@ -228,7 +230,9 @@ def run_toy_fit(
     return _fit(n_cycles, burn_in, seed, Path(output_path))
 
 
-def _fit(n_cycles: int, burn_in: int, seed: int, output_path: Path):
+def _fit(
+    n_cycles: int, burn_in: int, seed: int, output_path: Path
+) -> dict[str, tuple[float, float]]:
     observed = make_observed(seed)
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
@@ -255,6 +259,8 @@ def _fit(n_cycles: int, burn_in: int, seed: int, output_path: Path):
                 )
 
         wheel.run(n_cycles, on_cycle_complete=report)
+        l2 = wheel.l2
+        assert l2 is not None  # the Wheel was given an output_path
         results = {}
         for name, key in (
             ("slow", "amplitude"),
@@ -262,7 +268,7 @@ def _fit(n_cycles: int, burn_in: int, seed: int, output_path: Path):
             ("noise", "sigma"),
         ):
             # Entry 0 is the start; entries 1..n_cycles follow the cycles.
-            chain = wheel.l2.chain(name, key)[burn_in + 1 :]
+            chain = l2.chain(name, key)[burn_in + 1 :]
             results[name] = (float(chain.mean()), float(chain.std()))
     return results
 

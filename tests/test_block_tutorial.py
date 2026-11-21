@@ -31,6 +31,7 @@ def test_block_tutorial_runs_and_checks_its_sampler(tmp_path):
             **os.environ,
             "MPLBACKEND": "Agg",
             "MPLCONFIGDIR": str(tmp_path / "matplotlib"),
+            "TMPDIR": str(tmp_path),  # the campaign file stays under tmp_path
         },
         capture_output=True,
         text=True,

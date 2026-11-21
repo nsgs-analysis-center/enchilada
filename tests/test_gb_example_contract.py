@@ -8,14 +8,7 @@ import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import (
-    BlockState,
-    Covariance,
-    FixedNoiseBlock,
-    L1Data,
-    Wheel,
-    transform,
-)
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel, transform
 
 
 @pytest.fixture
@@ -84,11 +77,14 @@ def test_gb_rebuilds_its_template_from_the_published_parameters(
 ):
     data, noise = spectral_context
     block = make_block(gb_model)
-    published = block.initial_sample(data, noise, rng=np.random.default_rng(0))
-    zeroed = replace(data, channel_data={"A": np.zeros_like(data.channel_data["A"])})
+    # Publish from non-zero data and rebuild on the zero fixture: the rebuild may
+    # read only the grid, never the channel values.
+    rng = np.random.default_rng(1)
+    filled = replace(data, channel_data={"A": np.fft.rfft(rng.normal(size=64))})
+    published = block.initial_sample(filled, noise, rng=np.random.default_rng(0))
     rebuilt = block.state_from_parameters(
         {name: np.float64(value) for name, value in published.parameters.items()},
-        zeroed,
+        data,
     )
     assert isinstance(rebuilt, BlockState)
     assert rebuilt.covariance is None
@@ -99,7 +95,7 @@ def test_gb_rebuilds_its_template_from_the_published_parameters(
         )
     assert rebuilt.parameters == published.parameters
     with pytest.raises(ValueError, match="requires frequency-domain data"):
-        block.state_from_parameters(published.parameters, zeroed.to_time())
+        block.state_from_parameters(published.parameters, filled.to_time())
 
 
 def test_gb_requires_a_frequency_covariance_on_the_data_grid(

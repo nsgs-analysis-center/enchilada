@@ -23,9 +23,9 @@ this folder assumes you have read it.
    `FixedNoiseBlock`. Edits to `block.py` take effect cell by cell.
 3. **Run `wheel.ipynb`.** A `Wheel` on the same window, the covariance
    registered as a `FixedNoiseBlock` (`role="noise"`), the block registered
-   on its grid with `role="signal"`, the campaign file the
-   Wheel writes (`output_path`), the posterior read from `wheel.l2` against a
-   truth you type in, and a trace plot.
+   on its grid with `role="signal"`, the campaign file the Wheel writes
+   (`output_path`), the posterior read from `wheel.l2` against a truth you
+   type in, and a trace plot.
 
 ## Setup
 

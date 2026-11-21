@@ -13,11 +13,14 @@ per-sample units, and cross-channel terms are not modelled. On Fourier or WDM
 observations both blocks must therefore be registered with data_domain="time",
 and the floor built on that time grid. One excess variance is shared across all
 channels. ExcessNoiseBlock refuses a None floor, so it must be registered after
-another noise block. Run with:
+another noise block. The Wheel records both blocks to a campaign file and the
+excess-variance chain is read back from it with `wheel.l2`. Run with:
 
     uv run --no-sync python examples/noise_floor.py
 """
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -181,14 +184,17 @@ def make_observed(seed: int = 0) -> L1Data:
 def run_example(
     n_cycles: int = 400, burn_in: int = 100, seed: int = 0
 ) -> dict[str, Any]:
-    """Run the campaign; return the excess posterior summary and the Wheel."""
+    """Run the campaign; return the excess posterior summary and the Wheel.
+
+    The Wheel records to a campaign file in a temporary directory removed at
+    return, and the chain is read back from it; the returned Wheel is closed.
+    """
     if not 0 <= burn_in < n_cycles:
         raise ValueError("burn_in must be nonnegative and smaller than n_cycles")
     observed = make_observed(seed)
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
     campaign_seed = np.random.SeedSequence(seed).spawn(1)[0]
-    wheel = Wheel(observed, random_seed=int(campaign_seed.generate_state(1)[0]))
     floor = Covariance.like(
         observed,
         {
@@ -196,23 +202,31 @@ def run_example(
             for ch in observed.channel_names
         },
     )
-    # Both are noise blocks. The floor must go first because the excess block
-    # refuses to start without it; Wheel keeps floor + excess as the campaign
-    # covariance.
-    wheel.add(FixedNoiseBlock("floor", floor), role="noise")
-    wheel.add(ExcessNoiseBlock("excess"), role="noise")
-    chain: list[float] = []
+    with tempfile.TemporaryDirectory() as directory:
+        with Wheel(
+            observed,
+            random_seed=int(campaign_seed.generate_state(1)[0]),
+            output_path=Path(directory) / "noise_floor.h5",
+        ) as wheel:
+            # Both are noise blocks. The floor must go first because the excess
+            # block refuses to start without it; Wheel keeps floor + excess as the
+            # campaign covariance.
+            wheel.add(FixedNoiseBlock("floor", floor), role="noise")
+            wheel.add(ExcessNoiseBlock("excess"), role="noise")
 
-    def collect(cycle: int, w: Wheel) -> None:
-        chain.append(w.ledger["excess"].parameters["variance"])
-        if (cycle + 1) % 100 == 0:
-            print(
-                f"cycle {cycle + 1:4d}: excess variance draw = {chain[-1]:.4f}  "
-                f"(campaign covariance A[0] = {w.covariance.A[0]:.4f})"
-            )
+            def report(cycle: int, w: Wheel) -> None:
+                if (cycle + 1) % 100 == 0:
+                    draw = w.ledger["excess"].parameters["variance"]
+                    print(
+                        f"cycle {cycle + 1:4d}: excess variance draw = {draw:.4f}  "
+                        f"(campaign covariance A[0] = {w.covariance.A[0]:.4f})"
+                    )
 
-    wheel.run(n_cycles, on_cycle_complete=collect)
-    samples = np.asarray(chain[burn_in:])
+            wheel.run(n_cycles, on_cycle_complete=report)
+            l2 = wheel.l2
+            assert l2 is not None  # the Wheel was given an output_path
+            # Entry 0 is the start; entries 1..n_cycles follow the cycles.
+            samples = l2.chain("excess", "variance")[burn_in + 1 :]
     return {
         "posterior_mean": float(samples.mean()),
         "posterior_std": float(samples.std()),
