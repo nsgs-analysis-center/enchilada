@@ -290,8 +290,7 @@ class Wheel:
         return conditional_residual, covariance
 
     def _canonical_state(self, state: object, source_reference: L1Data) -> object:
-        # a non-BlockState passes through; _adopt supplies the block/method-specific
-        # error.
+        # A non-BlockState passes through; _adopt refuses it.
         return _state_on_grid(
             state, self._observed_data.grid, reference_data=source_reference
         )

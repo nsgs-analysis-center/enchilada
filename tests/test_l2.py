@@ -113,7 +113,7 @@ class TestRecorder:
             ({"nested": {"a": 1}}, TypeError, "recorded parameters must be"),
             ({"nothing": None}, TypeError, "recorded parameters must be"),
             ({"ragged": [[1], [1, 2]]}, TypeError, "is not a regular numeric array"),
-            ({"a\x00b": 1.0}, ValueError, "NUL"),
+            ({"a\x00b": 1.0}, ValueError, "NUL character"),
         ],
     )
     def test_encode_refuses_unrecordable_values(
@@ -173,9 +173,8 @@ class TestRecorder:
             {"amplitude": np.float32(2.0), "sources": np.zeros(0)},
             registering=False,
         )
-        assert narrow_and_empty.values[
-            0
-        ].dtype == np.float64 and narrow_and_empty.values[1].shape == (0,)
+        assert narrow_and_empty.values[0].dtype == np.float64
+        assert narrow_and_empty.values[1].shape == (0,)
         rec.encode(
             "b",
             "sample",
@@ -372,13 +371,34 @@ class TestRecorder:
         with h5py.File(tmp_path / "campaign.h5", "r") as file:
             assert int(file.attrs["num_steps"]) == 0
 
+    def test_a_failed_add_block_leaves_no_partial_group(
+        self, tmp_path, observed, monkeypatch
+    ):
+        rec = recorder(tmp_path, observed)
+        encoded = rec.encode("a", "initial_sample", {"x": 1.0}, registering=True)
+
+        def refuse(group, encoded):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(_Recorder, "_append_entry", staticmethod(refuse))
+        with pytest.raises(OSError, match="disk full"):
+            rec.add_block(
+                "a", role="signal", index=0, grid=observed.grid, encoded=encoded
+            )
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            rec.encode("a", "sample", {"x": 1.0}, registering=False)
+        assert list(rec.file["blocks"]) == []
+        rec.close()
+        with pytest.raises(RuntimeError, match="failed part-way"):
+            rec.encode("a", "sample", {"x": 1.0}, registering=False)
+
     def test_append_step_refuses_an_entry_for_another_schema(self, tmp_path, observed):
         rec = recorder(tmp_path, observed)
-        for name in ("a", "b"):
+        for index, name in enumerate(("a", "b")):
             rec.add_block(
                 name,
                 role="signal",
-                index=0,
+                index=index,
                 grid=observed.grid,
                 encoded=rec.encode(
                     name, "initial_sample", {"x": 1.0}, registering=True

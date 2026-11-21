@@ -59,10 +59,14 @@ def _check_hdf5_name(value: str, what: str, kind: str) -> None:
 
     `kind` is "group" for a block name or "dataset" for a parameter key.
     """
-    if "/" in value or "\x00" in value:
+    if "/" in value:
         raise ValueError(
-            f"{what} {value!r} contains '/' or a NUL character; it cannot name a "
-            f"{kind} in the output file"
+            f"{what} {value!r} contains '/'; it cannot name a {kind} in the output file"
+        )
+    if "\x00" in value:
+        raise ValueError(
+            f"{what} {value!r} contains a NUL character; it cannot name a {kind} in "
+            "the output file"
         )
     if value in ("", ".", ".."):
         raise ValueError(f"{what} {value!r} cannot name a {kind} in the output file")
@@ -172,6 +176,7 @@ class _Recorder:
     def __init__(self, file: h5py.File) -> None:
         self._file = file
         self._failed: BaseException | None = None
+        self._failed_at_step = 0
         self._schemas: dict[str, _Schema] = {}
 
     @classmethod
@@ -225,7 +230,7 @@ class _Recorder:
 
     def _require_writable(self) -> None:
         if self._failed is not None:
-            steps = int(self._file.attrs["num_steps"])
+            steps = self._failed_at_step
             raise RuntimeError(
                 "an earlier write to the campaign file failed part-way; the file is "
                 f"consistent up to step {steps} but cannot be appended to; construct "
@@ -307,6 +312,7 @@ class _Recorder:
     ) -> None:
         """Create the block's group and datasets and write its start as entry 0."""
         self._require_writable()
+        group = None
         try:
             group = self._file["blocks"].create_group(name)
             group.attrs["role"] = role
@@ -340,8 +346,17 @@ class _Recorder:
             self._append_entry(group, encoded)
             self._file.flush()
         except BaseException as error:
-            self._failed = error
+            self._latch(error)
+            self._schemas.pop(name, None)
+            if group is not None:
+                with contextlib.suppress(Exception):
+                    del self._file["blocks"][name]
             raise
+
+    def _latch(self, error: BaseException) -> None:
+        self._failed = error
+        with contextlib.suppress(Exception):
+            self._failed_at_step = int(self._file.attrs["num_steps"])
 
     def append_step(self, pending: dict[str, _Encoded]) -> None:
         """Append one entry per registered block and commit the step."""
@@ -363,7 +378,7 @@ class _Recorder:
             self._file.attrs["num_steps"] = int(self._file.attrs["num_steps"]) + 1
             self._file.flush()
         except BaseException as error:
-            self._failed = error
+            self._latch(error)
             raise
 
     @staticmethod
