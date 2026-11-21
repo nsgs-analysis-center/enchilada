@@ -1,5 +1,6 @@
 """Orchestrator-owned data, accepted physical estimates, and the two sums."""
 
+import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
@@ -13,6 +14,7 @@ from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid
+from enchilada.l2 import L2Data, _check_hdf5_name, _Encoded, _Recorder
 from enchilada.ledger import Ledger
 from enchilada.translation import _data_on_grid, _state_on_grid, _target_grid
 
@@ -63,6 +65,15 @@ class Wheel:
     add or run, each with ValueError naming both grids. A block registered with
     data_domain has its inputs and returned signal translated; a covariance is
     never translated.
+
+    With `output_path` the Wheel records the campaign: every block's parameters
+    at registration (step 0) and after each complete cycle, appended to an HDF5
+    file and flushed before `on_cycle_complete` runs; `wheel.l2` reads it live
+    and `L2Data.open` afterwards. Parameters must then be recordable (numeric
+    scalars or arrays; key set, dtype kind and dimension count fixed at
+    registration; any shape per step); a state that is not is refused like an
+    off-grid template. A partial cycle records nothing. `close()` or a `with`
+    block closes the file.
     """
 
     def __init__(
@@ -70,6 +81,7 @@ class Wheel:
         observed_data: L1Data,
         *,
         random_seed: int | None = None,
+        output_path: str | os.PathLike[str] | None = None,
     ) -> None:
         """Initialize a campaign from observations.
 
@@ -78,6 +90,10 @@ class Wheel:
                 makes independent pristine and working copies.
             random_seed: Seed for the campaign's NumPy generator. None requests
                 nondeterministic initialization.
+            output_path: Where to record the campaign: an HDF5 file the Wheel
+                creates now (an existing file raises FileExistsError) and
+                appends to at every registration and after every complete
+                cycle. None records nothing.
 
         The campaign has no covariance until a noise block publishes one at
         registration; a known noise model is a FixedNoiseBlock.
@@ -102,6 +118,14 @@ class Wheel:
         self._noise_sum = NoiseSum()
         self._covariance_grid: Grid | None = None
         self._rng = np.random.default_rng(random_seed)
+        self._recorder: _Recorder | None = None
+        self._l2: L2Data | None = None
+        self._pending: dict[str, _Encoded] = {}
+        if output_path is not None:
+            self._recorder = _Recorder.create(output_path, self._observed_data)
+            self._l2 = L2Data(
+                self._recorder.file, observed_data=self._observed_data, owns_file=False
+            )
 
     @staticmethod
     def _copy_data(data_to_copy: L1Data) -> L1Data:
@@ -144,6 +168,33 @@ class Wheel:
         """Live state store; indexing copies entries, snapshot() copies all entries."""
         return self._ledger
 
+    @property
+    def l2(self) -> L2Data | None:
+        """The live view of the campaign file, or None when no output_path was given."""
+        return self._l2
+
+    def close(self) -> None:
+        """Close the campaign file. Idempotent; a no-op without an output_path.
+
+        Afterwards `add` and `run` raise ValueError; read the finished file with
+        `L2Data.open`.
+        """
+        if self._recorder is not None:
+            self._recorder.close()
+
+    def __enter__(self) -> "Wheel":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _require_recording_open(self) -> None:
+        if self._recorder is not None and self._recorder.closed:
+            raise ValueError(
+                "the campaign output file is closed; construct a new Wheel to record "
+                "another campaign"
+            )
+
     def add(
         self,
         block_to_register: Block,
@@ -163,8 +214,10 @@ class Wheel:
         campaign unchanged: an exception from initial_sample, a return that is
         not a BlockState, an off-grid or non-finite template, a field the role
         forbids or lacks, a covariance on another grid than the block's, or a
-        state that cannot be deep-copied leaves the ledger, the block list, the
-        residual, both sums and the Wheel RNG as they were.
+        state that cannot be deep-copied, or, when recording, parameters that
+        cannot be recorded or a name that cannot name a group in the file leaves
+        the ledger, the block list, the residual, both sums and the Wheel RNG as
+        they were.
 
         initial_sample receives the current working residual (the observations
         minus the adopted starts of every block registered so far) on this
@@ -188,6 +241,7 @@ class Wheel:
         another grid is refused here, before initial_sample is called, and so
         is a signal block once a covariance has been published.
         """
+        self._require_recording_open()
         if role not in ROLES:
             raise ValueError(f"role must be 'signal' or 'noise', got {role!r}")
         observed = self._observed_data
@@ -213,6 +267,8 @@ class Wheel:
             raise ValueError(
                 f"block name must be a non-empty string, got {block_name!r}"
             )
+        if self._recorder is not None:
+            _check_hdf5_name(block_name, "block name", "group")
         if block_name in self._ledger:
             raise ValueError(f"block name {block_name!r} already registered")
         if not callable(getattr(block_to_register, "sample", None)):
@@ -311,6 +367,9 @@ class Wheel:
                 after every block in a cycle has returned an accepted state.
                 Indices start at zero for each run call. Partial cycles do not
                 invoke the callback.
+
+        When recording, the cycle's entries are appended to the file before the
+        callback runs.
         """
         if (
             not isinstance(num_cycles, (int, np.integer))
@@ -320,7 +379,9 @@ class Wheel:
             raise ValueError(
                 f"num_cycles must be a non-negative integer, got {num_cycles!r}"
             )
+        self._require_recording_open()
         for cycle_index in range(num_cycles):
+            self._pending = {}
             for block_name, block in self._blocks:
                 candidate_rng = deepcopy(self._rng)
                 block_grid = self._block_domains[block_name]
@@ -349,6 +410,9 @@ class Wheel:
                     role=role,
                     block_grid=block_grid,
                 )
+            if self._recorder is not None:
+                self._recorder.append_step(self._pending)
+                self._pending = {}
             if on_cycle_complete is not None:
                 on_cycle_complete(cycle_index, self)
 
@@ -492,6 +556,16 @@ class Wheel:
                 block_index, candidate_covariance
             )
             candidate_covariance_grid = block_grid
+        encoded = (
+            self._recorder.encode(
+                block_name,
+                source_method_name,
+                candidate_block_state.parameters,
+                registering=block_to_register is not None,
+            )
+            if self._recorder is not None
+            else None
+        )
         candidate_block_states = {
             **self._ledger._states_by_block_name,
             block_name: candidate_block_state,
@@ -530,3 +604,14 @@ class Wheel:
         self._roles = candidate_roles
         self._rng = next_rng
         self._blocks = next_blocks
+        if encoded is not None and self._recorder is not None:
+            if block_to_register is not None:
+                self._recorder.add_block(
+                    block_name,
+                    role=role,
+                    index=block_index,
+                    grid=block_grid,
+                    encoded=encoded,
+                )
+            else:
+                self._pending[block_name] = encoded

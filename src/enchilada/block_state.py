@@ -22,7 +22,11 @@ class BlockState:
     covariance. Values must support deepcopy: Wheel snapshots them on adoption
     and before each call. These are complete snapshots, not incremental changes.
     Sampler continuation state, diagnostics, and resources belong to the block's
-    own State object; they are not published to the ledger.
+    own State object; they are not published to the ledger. A recording
+    campaign (`Wheel(output_path=...)`) stores them: values must then be
+    numeric scalars or arrays, the key set and each key's dtype kind and
+    dimension count are fixed at registration, and shapes may change between
+    calls.
 
     `covariance` is this block's contribution to the noise sum: a noise block
     supplies its complete covariance on every call, on the grid of the data it
