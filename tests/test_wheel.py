@@ -1,7 +1,7 @@
 """Wheel: the block-state ledger, the data-minus-others handoff, and its guards.
 
 Every campaign here lives on an 8-row WDM home grid while the observations
-arrive on the time grid, so the public views (residuals, contributions, the
+arrive on the time grid unless a test says otherwise, so the public views (residuals, contributions, the
 covariance translated back) come back through one exact inverse transform and
 are compared to rounding (`CLOSE`); ledger entries and `observed_data` stay exact.
 """
@@ -90,7 +90,7 @@ class TestLedger:
         full = wheel.residual()
         for ch in obs.channel_names:
             np.testing.assert_allclose(
-                full.channel_data[ch], obs.channel_data[ch] - 111.0
+                full.channel_data[ch], obs.channel_data[ch] - 111.0, **CLOSE
             )
 
     def test_exclude_leaves_that_block_in(self, rng):
@@ -104,7 +104,7 @@ class TestLedger:
         seen = wheel.residual(exclude_block_name="b")
         for ch in obs.channel_names:
             np.testing.assert_allclose(
-                seen.channel_data[ch], obs.channel_data[ch] - 101.0
+                seen.channel_data[ch], obs.channel_data[ch] - 101.0, **CLOSE
             )
 
     def test_contribution_is_the_returned_signal_template(self, rng):
@@ -113,7 +113,9 @@ class TestLedger:
         wheel.add(ConstBlock("a", 7.0))
         wheel.run(2)
         for ch in obs.channel_names:
-            np.testing.assert_allclose(wheel.contribution(block_name="a")[ch], 7.0)
+            np.testing.assert_allclose(
+                wheel.contribution(block_name="a")[ch], 7.0, **CLOSE
+            )
 
     def test_a_template_built_in_place_is_accepted(self, rng):
         # a block may overwrite the arrays it was handed with its template and
@@ -148,9 +150,9 @@ class TestLedger:
         wheel.add(InPlace())
         wheel.run(2)
         for ch in obs.channel_names:
-            np.testing.assert_allclose(wheel.contribution("ip")[ch], 3.0)
+            np.testing.assert_allclose(wheel.contribution("ip")[ch], 3.0, **CLOSE)
             np.testing.assert_allclose(
-                wheel.residual().channel_data[ch], obs.channel_data[ch] - 3.0
+                wheel.residual().channel_data[ch], obs.channel_data[ch] - 3.0, **CLOSE
             )
 
     def test_unknown_exclude_or_contribution_rejected(self, observed):
@@ -265,8 +267,12 @@ class TestNoAddBack:
         wheel.run(1)
         # a sees data minus b (5); b sees data minus a (2)
         for ch in obs.channel_names:
-            np.testing.assert_allclose(seen["a"][ch], obs.channel_data[ch] - 5.0)
-            np.testing.assert_allclose(seen["b"][ch], obs.channel_data[ch] - 2.0)
+            np.testing.assert_allclose(
+                seen["a"][ch], obs.channel_data[ch] - 5.0, **CLOSE
+            )
+            np.testing.assert_allclose(
+                seen["b"][ch], obs.channel_data[ch] - 2.0, **CLOSE
+            )
 
     def test_samples_see_latest_signals_in_registration_order(self, observed):
         seen = []
@@ -296,7 +302,9 @@ class TestNoAddBack:
         wheel.run(2)
         assert [name for name, _ in seen] == ["a", "b", "a", "b"]
         for (_, handed), subtracted in zip(seen, [5.0, 3.0, 6.0, 4.0], strict=True):
-            np.testing.assert_allclose(handed, observed.channel_data["A"] - subtracted)
+            np.testing.assert_allclose(
+                handed, observed.channel_data["A"] - subtracted, **CLOSE
+            )
 
 
 class TestAtomicRegistration:
@@ -566,7 +574,7 @@ class TestBoundaryGuards:
 
     def test_a_signal_block_does_not_disturb_the_noise_model(self, rng):
         """A signal block never publishes a covariance, so the noise sum is
-        exactly what the noise blocks published."""
+        exactly the home-grid translation of what the noise blocks published."""
         obs = make_observed(rng).to_frequency()
         covariance = white_covariance(obs, 3.0)
         wheel = Wheel(obs, num_frequency_divisions=8)
@@ -715,7 +723,11 @@ def test_cancelling_signals_do_not_erase_the_observation(rng):
 
 
 def level_on(residual, value):
-    """A time-constant template of `value`, expressed on `residual`'s grid."""
+    """A time-constant template of `value`, expressed on `residual`'s WDM grid.
+
+    The residual is zeroed first because `const_block_state` only reads shapes,
+    and a residual near -max would overflow `transform(..., "time")`.
+    """
     zeros = replace(
         residual,
         channel_data={
@@ -723,16 +735,11 @@ def level_on(residual, value):
         },
     )
     time_reference = transform(zeros, "time")
-    options = (
-        {}
-        if residual.wdm_grid is None
-        else {"num_frequency_divisions": residual.wdm_grid.num_frequency_divisions}
-    )
     return transform(
         const_block_state(time_reference, value),
         residual.data_domain,
         reference_data=time_reference,
-        **options,
+        num_frequency_divisions=residual.wdm_grid.num_frequency_divisions,
     )
 
 
@@ -769,8 +776,10 @@ def test_cached_signal_sums_follow_updates_withdrawals_and_failures(rng):
 
     wheel = Wheel(observed, num_frequency_divisions=8)
     # Every block works on the home grid itself (data_domain="wdm" without
-    # counts), so the enormous leaf below is summed but never translated; the
-    # levels are time constants expressed on that grid.
+    # counts). Every conditional residual that contains the enormous leaf
+    # (about -max) is then never inverse-transformed; on the default grid the
+    # run would fail at block 0 with "domain transformation produced non-finite
+    # coefficients". The levels are time constants expressed on that grid.
     for index in range(9):
         wheel.add(Changing(str(index), float(index + 1)), data_domain="wdm")
     np.testing.assert_allclose(wheel.residual().channel_data["A"], 55.0, **CLOSE)
@@ -785,7 +794,7 @@ def test_cached_signal_sums_follow_updates_withdrawals_and_failures(rng):
     # Force an overflow in the candidate tree after its leaves pass validation.
     wheel.add(Enormous(), data_domain="wdm")
     before_failed_block = wheel.contribution("4")["A"]
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(ValueError, match="residual in channel 'A' became non-finite"):
         wheel.run(1)
     np.testing.assert_array_equal(wheel.contribution("4")["A"], before_failed_block)
     # The first four withdrawals were accepted; the rejected candidate never
@@ -806,16 +815,24 @@ def test_signal_aggregation_preserves_small_float32_contributions(rng):
         def _block_state(self, residual):
             return residual.block_state(
                 {
-                    name: np.full(64, self.value, dtype=np.float32)
+                    name: np.full_like(
+                        residual.channel_data[name], self.value, dtype=np.float32
+                    )
                     for name in residual.channel_names
                 }
             )
 
     wheel = Wheel(observed, num_frequency_divisions=8)
     for index, value in enumerate((1e8, 1.0, -1e8)):
-        wheel.add(NarrowSignal(str(index), value))
-    # The leaves are translated in float64; the 1e8 pair cancels to its rounding.
-    np.testing.assert_allclose(wheel.residual().channel_data["A"], 0.0, atol=1e-6)
+        wheel.add(NarrowSignal(str(index), value), data_domain="wdm")
+    # The leaves stay float32 on the home grid, so the tree's float64 promotion
+    # is what keeps the residual accurate.
+    assert wheel.ledger["1"].template["A"].dtype == np.float32
+    np.testing.assert_allclose(
+        wheel.residual().channel_data["A"],
+        observed.channel_data["A"] - wheel.contribution("1")["A"],
+        **CLOSE,
+    )
 
 
 class TestDocumentedContracts:
@@ -836,10 +853,10 @@ class TestDocumentedContracts:
 
         wheel.add(Reader("b", 2.0))
         np.testing.assert_allclose(
-            seen["residual"].channel_data["A"], obs.channel_data["A"] - 1.0
+            seen["residual"].channel_data["A"], obs.channel_data["A"] - 1.0, **CLOSE
         )
         np.testing.assert_allclose(
-            wheel.residual().channel_data["A"], obs.channel_data["A"] - 3.0
+            wheel.residual().channel_data["A"], obs.channel_data["A"] - 3.0, **CLOSE
         )
 
     def test_residual_returns_fresh_arrays(self, rng):
@@ -858,7 +875,7 @@ class TestDocumentedContracts:
         wheel.add(ConstBlock("a", 2.0))
         got = wheel.contribution("a")
         got["A"][:] = 100.0
-        np.testing.assert_allclose(wheel.contribution("a")["A"], 2.0)
+        np.testing.assert_allclose(wheel.contribution("a")["A"], 2.0, **CLOSE)
 
     @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
     @pytest.mark.parametrize("channel", ["A", "E", "T"])
@@ -918,8 +935,8 @@ class TestDocumentedContracts:
         wheel = Wheel(obs, num_frequency_divisions=8)
         wheel.add(PartlyZero())
         wheel.run(2)
-        np.testing.assert_allclose(wheel.contribution("p")["T"], 0.0)
-        np.testing.assert_allclose(wheel.contribution("p")["A"], 1.0)
+        np.testing.assert_array_equal(wheel.contribution("p")["T"], 0.0)
+        np.testing.assert_allclose(wheel.contribution("p")["A"], 1.0, **CLOSE)
 
     def test_block_name_must_be_a_string_not_just_non_empty(self, observed):
         class Numbered(ConstBlock):
@@ -1019,13 +1036,19 @@ class TestObservedDataIsChecked:
 
         # On the right grid, validation passes; only the copy keeps the stored
         # object a plain Covariance rather than the caller's subclass.
+        # Published on the home grid itself (no translation), so the identity
+        # assertions on the noise sum below bite: a translated covariance would
+        # always be a fresh plain Covariance.
+        home_white = transform(
+            white_covariance(observed, 2.0), "wdm", num_frequency_divisions=8
+        )
         compatible = UncheckedCovariance(
-            white_covariance(observed, 2.0).blocks,
+            home_white.blocks,
             channel_names=observed.channel_names,
-            grid=observed.grid,
+            grid=home_white.grid,
         )
         wheel = Wheel(observed, num_frequency_divisions=8)
-        wheel.add(FixedNoiseBlock("fixed", compatible))
+        wheel.add(FixedNoiseBlock("fixed", compatible), data_domain="wdm")
         assert type(wheel._noise_sum.total) is Covariance
         assert wheel._noise_sum.total is not compatible
         assert type(wheel.ledger["fixed"].covariance) is Covariance
@@ -1042,7 +1065,7 @@ class TestObservedDataIsChecked:
                 return BlockState(covariance=compatible)
 
         wheel = Wheel(observed, num_frequency_divisions=8)
-        wheel.add(PublishesCompatible("noise"))
+        wheel.add(PublishesCompatible("noise"), data_domain="wdm")
         assert type(wheel._noise_sum.total) is Covariance
         assert type(wheel.ledger["noise"].covariance) is Covariance
         wheel.run(1)

@@ -25,7 +25,11 @@ from enchilada.testing import EchoBlock
 
 
 class EchoNoise(EchoBlock):
-    """An EchoBlock declaring the noise role; its start supplies the covariance."""
+    """An EchoBlock declaring the noise role (registration only).
+
+    Its start supplies the covariance; its `sample` returns an empty state, so
+    `run` would refuse it as a noise block.
+    """
 
     role = "noise"
 
@@ -281,7 +285,7 @@ def test_wheel_rejects_mutated_wdm_buffers_with_same_time_sample_count():
     for name in data.channel_names:
         data.channel_data[name] = np.zeros((8, 8))
     with pytest.raises(ValueError, match="shape"):
-        Wheel(data, num_frequency_divisions=8)
+        Wheel(data)
     assert data.wdm_grid is original_grid
 
 
