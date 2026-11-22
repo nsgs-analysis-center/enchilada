@@ -156,6 +156,7 @@ def test_gb_frequency_registration_reads_the_home_grid_noise_on_its_frequency_gr
     wheel.run(1)
     assert len(seen_psds) == 2
     for psd in seen_psds:
+        assert psd.dtype == np.float64  # a real PSD, never complex
         # Exact because the fixture PSD is flat; a coloured PSD arrives
         # band-averaged at the home grid's row resolution.
         np.testing.assert_allclose(psd, 2.0 * noise.pair("A", "A") / data.Tobs)

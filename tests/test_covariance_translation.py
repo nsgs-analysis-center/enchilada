@@ -114,7 +114,7 @@ class TestExactCases:
         cells = np.exp(0.3 * rng.normal(size=(NF, NT)))
         exact = (np.abs(F @ W_inverse) ** 2) @ cells.ravel()
         mine = translate_blocks(one(cells), WDM, FREQUENCY)[0, 0]
-        assert mine.dtype == np.complex128
+        assert mine.dtype == np.float64
         assert relative(mine.real, exact) < 1e-12
 
     def test_a_slowly_varying_white_variance_into_wdm_is_the_exact_cell_variance(
@@ -168,8 +168,17 @@ class TestExactCases:
     def test_time_to_frequency_is_the_mean_power(self):
         variance = 1.0 + 0.8 * np.sin(2 * np.pi * np.arange(N) / N)
         mine = translate_blocks(one(variance), TIME, FREQUENCY)[0, 0]
-        assert mine.dtype == np.complex128
+        assert mine.dtype == np.float64
         assert relative(mine.real, DT**2 * variance.sum()) < 1e-14
+
+    def test_a_frequency_target_is_real_valued_float64(self):
+        variance = 1.7
+        white = translate_blocks(one(np.full(N, variance)), TIME, FREQUENCY)[0, 0]
+        assert white.dtype == np.float64
+        assert relative(white, np.full(NUM_BINS, N * DT**2 * variance)) < 1e-14
+        cells = np.full((NF, NT), 2.0)
+        from_wdm = translate_blocks(one(cells), WDM, FREQUENCY)
+        assert from_wdm.dtype == np.float64
 
     def test_wdm_to_time_preserves_the_trace_and_flattens_a_stationary_input(
         self, dense
@@ -259,13 +268,11 @@ class TestTransformOverload:
             assert type(translated) is Covariance
             assert translated.channel_names == ("A", "E", "T")
             assert translated.grid == expected
-            assert translated.blocks.dtype == (
-                np.complex128 if step == "frequency" else np.float64
-            )
+            assert translated.blocks.dtype == np.float64
             assert np.all(translated.A > 0)
         back = transform(translated, "frequency")
         assert back.grid == FREQUENCY
-        assert back.blocks.dtype == np.complex128
+        assert back.blocks.dtype == np.float64
         assert np.all(back.blocks[0, 1].imag == 0)  # the diagonal model keeps Re
         assert np.all(back.A > 0)
 

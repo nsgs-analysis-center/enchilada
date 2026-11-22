@@ -166,9 +166,9 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
     """The covariance blocks ``(K, K, *source.channel_shape)`` read on ``target``.
 
     ``source`` and ``target`` share the record (sample count and rate) and
-    differ in domain or WDM grid. Frequency targets come back ``complex128``,
-    the others ``float64``; a complex cross term entering time or WDM keeps
-    its real part (the mean power of the pair). When the target WDM grid has
+    differ in domain or WDM grid. Results are ``float64`` on every target; a
+    complex cross term entering the translation keeps its real part (the mean
+    power of the pair). When the target WDM grid has
     fewer columns than the source, each target column reads one source column,
     so power confined to a skipped source column is not carried (a recorded
     design choice).
@@ -186,7 +186,7 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
         if target.data_domain == "frequency":
             level = n * dt**2 * variance.mean(axis=-1)
             shape = pair_shape + (n // 2 + 1,)
-            return np.broadcast_to(level[..., None], shape).astype(np.complex128)
+            return np.broadcast_to(level[..., None], shape).copy()
         layout = _layout_of(target)
         column_model = 2.0 * dt * layout.columns_from_samples(variance)
         shape = pair_shape + (
@@ -214,7 +214,7 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
     model = 2.0 * layout.padded(blocks.real)
     if target.data_domain == "frequency":
         spectrum = layout.bins_from_bands(model.mean(axis=-1))
-        return ((n * dt / 2.0) * spectrum).astype(np.complex128)
+        return (n * dt / 2.0) * spectrum
     if target.data_domain == "time":
         column_model = np.einsum("m,...mn->...n", layout.band_share, model)
         return layout.samples_from_columns(column_model) / (2.0 * dt)
