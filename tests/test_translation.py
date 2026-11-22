@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import BlockState, L1Data, WDMGrid
+from enchilada import BlockState, Covariance, L1Data, WDMGrid
 from enchilada.translation import transform
 
 
@@ -124,17 +124,21 @@ def test_block_state_with_template_and_covariance_translates_only_the_template()
     assert not np.shares_memory(converted.covariance.blocks, covariance.blocks)
 
 
-def test_transform_rejects_a_covariance():
+def test_transform_translates_a_covariance_and_refuses_other_types():
     data = observations()
     covariance = white_covariance(data, 2.0)
-    with pytest.raises(TypeError, match="does not take a Covariance.*copy"):
-        transform(covariance, "time")
-    with pytest.raises(TypeError, match="does not take a Covariance"):
-        transform(covariance, "frequency", reference_data=data)
-    # Refused before the arguments: not the division-count ValueError.
-    with pytest.raises(TypeError, match="does not take a Covariance"):
+    spectrum = transform(covariance, "frequency")
+    assert type(spectrum) is Covariance
+    assert spectrum.grid == transform(data, "frequency").grid
+    np.testing.assert_allclose(
+        spectrum.A, white_covariance(transform(data, "frequency"), 2.0).A
+    )
+    cells = transform(covariance, "wdm", num_frequency_divisions=8)
+    assert cells.grid == transform(data, "wdm", num_frequency_divisions=8).grid
+    np.testing.assert_allclose(cells.A, 2.0 / data.fs, rtol=1e-12)
+    with pytest.raises(ValueError, match="division counts apply only"):
         transform(covariance, "frequency", num_frequency_divisions=8)
-    with pytest.raises(TypeError, match="expects L1Data or BlockState"):
+    with pytest.raises(TypeError, match="expects L1Data, BlockState or Covariance"):
         transform({"A": np.zeros(4)}, "time")
 
 
