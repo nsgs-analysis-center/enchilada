@@ -40,12 +40,13 @@ ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5 uv run --no-sync jupyter lab forge/
 In a running kernel, `%env ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5` in a
 cell sets it before the settings cell runs.
 
-The notebooks read three environment variables:
+The notebooks read four environment variables:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `ENCHILADA_MOJITO_L1` | the Mojito-layout L1 file | required |
 | `FORGE_DURATION_S` | native seconds to load | `86400` (one day) |
+| `FORGE_ROWS` | rows of the WDM home grid; must divide the window's sample count with an even quotient, and more rows mean narrower bands (the default day at factor 10 gives 34560 samples = 64 x 540) | `64` |
 | `FORGE_FACTOR` | decimation factor | `10` (0.4 Hz from a 4 Hz file such as Mojito's) |
 
 `data.py` is shared by both notebooks. `load_window` goes through
@@ -85,8 +86,11 @@ num_time_divisions=...)`, which derives the duration. `DOMAIN = "wdm"` serves
 the block on the home grid itself. A block on any other grid is served by
 exact data transforms and receives the noise sum translated onto its grid
 through the diagonal spectral-model rule (exact for the white stand-in PSD,
-band-smoothed for a coloured one; see the README's translation table), so
-blocks on different grids can share one campaign.
+band-smoothed for a coloured one; see the translation section of the
+[top-level README](../README.md)), so
+blocks on different grids can share one campaign. The ledger keeps each
+publication on the grid it was made on, the home-grid sum receives its
+translation, and each block receives the sum on its own grid.
 
 ## Caveats
 
