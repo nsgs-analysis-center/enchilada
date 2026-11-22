@@ -66,7 +66,9 @@ class ForgeBlock:
     draw.
     """
 
-    role = "signal"  # publishes a template; Wheel reads this at add
+    # publishes a template; Wheel reads this at add. A class attribute, not a
+    # dataclass field: an annotation would make it an __init__ parameter.
+    role = "signal"
 
     name: str = "forge"
     frequency_hz: float = 1e-3

@@ -40,7 +40,10 @@ ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5 uv run --no-sync jupyter lab forge/
 In a running kernel, `%env ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5` in a
 cell sets it before the settings cell runs.
 
-The notebooks read four environment variables:
+The notebooks read four environment variables (the decimated window has
+`FORGE_DURATION_S` x 4 Hz / `FORGE_FACTOR` samples; for an hour at factor 10 that
+is 1440, so 48, 60 or 72 rows work and 64 does not; a bad count stops the
+settings cell early):
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
@@ -87,10 +90,10 @@ the block on the home grid itself. A block on any other grid is served by
 exact data transforms and receives the noise sum translated onto its grid
 through the diagonal spectral-model rule (exact for the white stand-in PSD,
 band-smoothed for a coloured one; see the translation section of the
-[top-level README](../README.md)), so
-blocks on different grids can share one campaign. The ledger keeps a
-noise block's covariance on the grid it was published on (templates are stored
-on the home grid), the home-grid sum receives its translation, and each block
+[top-level README](../README.md#time-frequency-and-wdm-translation)), so
+blocks on different grids can share one campaign. The ledger keeps a noise
+block's covariance on the grid it was published on (templates are stored on
+the home grid), the home-grid sum receives its translation, and each block
 receives the sum on its own grid.
 
 ## Caveats
@@ -98,7 +101,17 @@ receives the sum on its own grid.
 - **Time grid, white noise only.** enchilada's time-grid covariance is one
   variance per sample, so `analytic_covariance` accepts only a white PSD
   there and refuses a coloured one. Coloured noise needs the frequency or
-  WDM grid.
+  WDM grid. (In a campaign a time-grid block does receive a coloured sum, as
+  its mean power in one flat variance.)
+- **Band width.** A frequency-grid block receives the home-grid sum averaged
+  over bands of width fs / (2 `FORGE_ROWS`): 3.125 mHz at 64 rows and 0.4 Hz.
+  The placeholder's 1 mHz line then sits in band 0 (DC to 1.56 mHz), where the
+  smoothing is worst. Through a real Wheel, the forge test's own
+  `coloured_psd` (an f^-2 corner at 1 mHz) reaches a frequency-grid block 59
+  times too large at 1 mHz with 64 rows, and 1.5 times with 128. Raise
+  `FORGE_ROWS` before swapping in a red PSD (for the default day, e.g. 540
+  rows x 64 columns). Whether the approximation is acceptable is yours to
+  judge; white noise is exact at any row count.
 - **Edge transient.** `decimate` leaves 40 filter-transient samples at each
   end of the record (`enchilada.resample.edge_samples`); nothing is trimmed,
   and on a WDM grid the transient leaks a few columns inward.
@@ -106,9 +119,10 @@ receives the sum on its own grid.
   the new Nyquist frequency, so the PSD of the native noise overstates the
   cells above that (conservative) and the white time-grid variance by about
   13 %. A WDM cell's variance is half the PSD averaged across its band
-  (`domania.wdm_covariance`), so each cell's variance is right across
-  notches and steep walls (the diagonal covariance still drops the
-  correlations a steep wall puts between neighbouring cells); row 0
+  (`domania.wdm_covariance`), so each home-grid cell's variance is right
+  across notches and steep walls (the diagonal covariance still drops the
+  correlations a steep wall puts between neighbouring cells); a block on
+  another grid receives that sum band-averaged, see Band width. Row 0
   interleaves DC and Nyquist.
 - **White stand-in.** The notebooks' `LEVEL` is a white PSD at the loaded
   window's own variance (for white native noise, about 12 % below the
