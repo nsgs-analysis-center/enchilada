@@ -123,6 +123,8 @@ def snapshot(wheel):
         "names": list(wheel.ledger),
         "roles": dict(wheel._roles),
         "grids": dict(wheel._block_domains),
+        "blocks": list(wheel._blocks),
+        "block_indices": dict(wheel._block_indices),
         "residual": wheel._working_residual.channel_data["A"].copy(),
         "covariance": None if total is None else total.A.copy(),
         "rng": wheel._rng.bit_generator.state,
@@ -151,6 +153,14 @@ def assert_unchanged(wheel, before):
     assert after["names"] == before["names"]
     assert after["roles"] == before["roles"]
     assert after["grids"] == before["grids"]
+    assert [name for name, _ in after["blocks"]] == [
+        name for name, _ in before["blocks"]
+    ]
+    for (_, after_block), (_, before_block) in zip(
+        after["blocks"], before["blocks"], strict=True
+    ):
+        assert after_block is before_block
+    assert after["block_indices"] == before["block_indices"]
     assert after["rng"] == before["rng"]
     assert after["signal_sum"] is before["signal_sum"]
     assert after["noise_sum"] is before["noise_sum"]
@@ -444,6 +454,137 @@ class TestNoiseSum:
             wheel.covariance.blocks, noise.published[-1].blocks
         )
         np.testing.assert_array_equal(wheel.contribution("signal")["A"], template)
+
+    def test_a_noise_block_on_another_wdm_grid_is_kept_native_and_summed_at_home(
+        self, observed
+    ):
+        coarse = transform(observed, "wdm", num_frequency_divisions=4)
+        wheel = Wheel(observed, num_frequency_divisions=NF)
+        wheel.add(
+            FixedNoiseBlock("floor", white_covariance(coarse, 2.0)),
+            data_domain="wdm",
+            num_frequency_divisions=4,
+        )
+        signal = LevelSignal("coarse", 1.0)
+        wheel.add(signal, data_domain="wdm", num_frequency_divisions=4)
+        wheel.run(1)
+        native = wheel.ledger["floor"].covariance
+        assert native.grid == coarse.grid
+        assert native.grid.wdm_grid.num_frequency_divisions == 4
+        np.testing.assert_array_equal(
+            native.blocks, white_covariance(coarse, 2.0).blocks
+        )
+        assert wheel.covariance.grid == wheel.home_grid
+        np.testing.assert_allclose(
+            wheel.covariance.A, white_covariance(home_of(observed), 2.0).A, rtol=1e-12
+        )
+        assert len(signal.state.received) == 2
+        for residual, received in signal.state.received:
+            assert residual.grid == received.grid == coarse.grid
+            np.testing.assert_allclose(
+                received.A, white_covariance(coarse, 2.0).A, rtol=1e-12
+            )
+
+
+class TestHomeGridHandOver:
+    """A block on the home grid receives copies, never the stored objects."""
+
+    def test_a_home_grid_noise_block_cannot_corrupt_the_stored_covariance(
+        self, observed
+    ):
+        class Corrupting(WhiteNoise):
+            """Overwrites every array of the covariance it receives, then publishes."""
+
+            @staticmethod
+            def _corrupt(covariance):
+                if covariance is not None:
+                    covariance.blocks.flags.writeable = True
+                    covariance.blocks[...] = 999.0
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                self._corrupt(covariance)
+                return super().initial_sample(conditional_residual, covariance, rng=rng)
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                self._corrupt(covariance)
+                return super().sample(
+                    conditional_residual, covariance, current_block_state, rng=rng
+                )
+
+        cells = home_of(observed)
+        wheel = Wheel(observed, num_frequency_divisions=NF)
+        first, second = WhiteNoise("first", 1.0), Corrupting("second", 3.0)
+        wheel.add(first, data_domain="wdm")
+        first_published = wheel.ledger["first"].covariance.blocks.copy()
+        total = (white_covariance(cells, 1.0) + white_covariance(cells, 3.0)).blocks
+        wheel.add(second, data_domain="wdm")
+        wheel.run(2)
+        assert len(second.received) == 3
+        for received, _ in second.received:  # each was its own copy to overwrite
+            assert received.grid == wheel.home_grid
+            np.testing.assert_array_equal(received.blocks, 999.0)
+        np.testing.assert_array_equal(
+            wheel.ledger["first"].covariance.blocks, first_published
+        )
+        np.testing.assert_array_equal(wheel.covariance.blocks, total)
+
+    def test_a_home_grid_block_cannot_corrupt_the_working_residual(self, observed):
+        class Scribbler(LevelSignal):
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                values = conditional_residual.channel_data["A"]
+                values.flags.writeable = True
+                values[...] = 999.0
+                raise RuntimeError("scribbled on its residual, then failed")
+
+        wheel = Wheel(observed, num_frequency_divisions=NF, random_seed=3)
+        wheel.add(FixedNoiseBlock("floor", white_covariance(observed, 1.0)))
+        wheel.add(LevelSignal("time", 1.0))
+        before = snapshot(wheel)
+        with pytest.raises(RuntimeError, match="scribbled on its residual"):
+            wheel.add(Scribbler("scribbler", 1.0), data_domain="wdm")
+        assert_unchanged(wheel, before)
+        assert "scribbler" not in wheel._roles
+
+    def test_a_hand_over_that_does_not_translate_is_refused_before_the_block_runs(
+        self, observed
+    ):
+        cells = home_of(observed)
+        huge = Covariance.like(
+            cells,
+            {
+                ch: np.full(cells.grid.channel_shape, 5e306)
+                for ch in cells.channel_names
+            },
+        )
+        spectrum = observed.to_frequency().grid
+
+        def refusal(name):
+            return pytest.raises(
+                ValueError,
+                match=re.escape(
+                    f"covariance for block {name!r} does not translate onto its "
+                    f"grid {spectrum}: "
+                )
+                + ".*finite",
+            )
+
+        wheel = Wheel(observed, num_frequency_divisions=NF, random_seed=3)
+        early = LevelSignal("early", 1.0)
+        wheel.add(early, data_domain="frequency")  # before any noise: receives None
+        wheel.add(FixedNoiseBlock("floor", huge), data_domain="wdm")
+        before = snapshot(wheel)
+        late = LevelSignal("late", 1.0)
+        # The home-grid floor overflows on the frequency grid's bins.
+        with np.errstate(over="ignore", invalid="ignore"), refusal("late"):
+            wheel.add(late, data_domain="frequency")
+        assert late.state.received == []
+        assert_unchanged(wheel, before)
+        with np.errstate(over="ignore", invalid="ignore"), refusal("early"):
+            wheel.run(1)
+        assert len(early.state.received) == 1  # its registration only
+        assert_unchanged(wheel, before)
 
 
 class TestDeclaredRoles:

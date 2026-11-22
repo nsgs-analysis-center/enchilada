@@ -260,8 +260,9 @@ class Wheel:
         data_domain selects time, frequency or wdm for this block's residual,
         current state and published covariance. None means the arrival grid of
         the observations. "wdm" without division counts means the home grid,
-        which costs no transform; with a count it is another WDM grid, and the
-        other count follows from the observation length (both must be even).
+        which costs no transform; with counts that differ from the home grid's
+        it is another WDM grid, and the other count follows from the
+        observation length (both must be even).
         """
         block_grid = self._block_grid(
             data_domain, num_frequency_divisions, num_time_divisions
@@ -371,11 +372,17 @@ class Wheel:
             # restore an independent read-only copy without revalidating.
             covariance = deepcopy(total)
         else:
-            covariance = transform(
-                total,
-                block_grid.data_domain,
-                num_frequency_divisions=self._frequency_divisions(block_grid),
-            )
+            try:
+                covariance = transform(
+                    total,
+                    block_grid.data_domain,
+                    num_frequency_divisions=self._frequency_divisions(block_grid),
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"covariance for block {block_name!r} does not translate onto "
+                    f"its grid {block_grid}: {error}"
+                ) from error
         return conditional_residual, covariance
 
     def run(
