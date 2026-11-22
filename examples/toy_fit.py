@@ -4,14 +4,14 @@ Blocks retain fixed model configuration. Wheel owns the current parameters,
 BlockState snapshots, the noise sum, and the sampling random stream. Each block
 draws its own start from its prior in initial_sample, with the RNG Wheel passes
 at registration; an on_cycle_complete callback collects posterior chains outside
-the blocks. The sine blocks register as signal blocks and the white-noise block
-as the one noise block, so the sines receive exactly its covariance and the
-noise block itself receives None because it is alone. These
-blocks request time-domain inputs; Wheel also runs them on Fourier or WDM
-observations with data_domain="time", because the noise block publishes its
-covariance on that time grid. Their likelihood requires time-domain noise with
-independent channels.
-Run with:
+the blocks. The sine blocks declare role = "signal" and the white-noise block
+role = "noise" (the one noise block), so the sines receive its covariance,
+translated onto their time grid (exact for white noise), and the noise block
+itself receives None because it is alone. run_toy_fit keeps its campaign on a
+64 x 64 WDM home grid for the 4096 samples. On Fourier observations pass a
+division count to Wheel; WDM observations bring their own grid. Either way the
+blocks keep data_domain="time" throughout: their likelihood requires
+time-domain noise with independent channels. Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """
@@ -28,6 +28,8 @@ class SineBlock:
     a per-sample noise variance on the data grid. Its waveform basis is derived
     from the supplied grid each call.
     """
+
+    role = "signal"
 
     def __init__(self, name: str, freq: float, prior_std: float = 10.0):
         if not np.isfinite(prior_std) or prior_std <= 0:
@@ -104,6 +106,8 @@ class WhiteNoiseBlock:
     It models the whole noise, so the covariance it receives must be None
     (register it as the only noise block).
     """
+
+    role = "noise"
 
     def __init__(self, name: str, shape: float = 2.0, scale: float = 1.0):
         if not np.isfinite([shape, scale]).all() or min(shape, scale) <= 0:
@@ -197,13 +201,15 @@ def run_toy_fit(n_cycles: int = 300, burn_in: int = 100, seed: int = 0):
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
     campaign_seed = np.random.SeedSequence(seed).spawn(1)[0]
-    wheel = Wheel(observed, random_seed=int(campaign_seed.generate_state(1)[0]))
+    wheel = Wheel(
+        observed,
+        num_frequency_divisions=64,  # the WDM home grid: 64 rows x 64 columns
+        random_seed=int(campaign_seed.generate_state(1)[0]),
+    )
     # The sine starts need no covariance, so the signal blocks may register first.
     for name, frequency in (("slow", 0.004), ("fast", 0.011)):
-        wheel.add(
-            SineBlock(name=name, freq=frequency), role="signal", data_domain="time"
-        )
-    wheel.add(WhiteNoiseBlock(name="noise"), role="noise", data_domain="time")
+        wheel.add(SineBlock(name=name, freq=frequency), data_domain="time")
+    wheel.add(WhiteNoiseBlock(name="noise"), data_domain="time")
     chains: dict[str, list[float]] = {name: [] for name in ("slow", "fast", "noise")}
 
     def collect(cycle: int, w: Wheel) -> None:

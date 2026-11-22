@@ -30,7 +30,7 @@ def test_translation_example_preserves_data_and_states_across_domains():
     assert report["result_roundtrip_max_error"] < 1e-12
     assert report["result_parameters"] == {"amplitude": 0.1}
     assert report["block_domains"] == ["time", "frequency", "wdm"]
-    assert report["canonical_domain"] == "time"
+    assert report["arrival_domain"] == "time"
     assert report["residual_max_error"] < 1e-12
     assert report["sample_calls"] == {"time": 2, "frequency": 2, "wdm": 2}
 

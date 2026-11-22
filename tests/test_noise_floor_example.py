@@ -8,7 +8,7 @@ import pytest
 
 from conftest import make_observed as small_observed
 from conftest import white_covariance
-from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel, transform
 from enchilada.testing import check_block
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -37,9 +37,11 @@ def test_the_excess_variance_is_recovered_above_the_floor(noise_floor):
     np.testing.assert_array_equal(
         wheel.ledger["floor"].covariance.A, noise_floor.TRUTH["floor"]
     )
+    # The sum lives on the home grid; translated back to time it is floor + excess.
     np.testing.assert_allclose(
-        wheel.covariance.A,
+        transform(wheel.covariance, "time").A,
         noise_floor.TRUTH["floor"] + wheel.ledger["excess"].covariance.A,
+        rtol=1e-12,
     )
     assert wheel.ledger["excess"].template is None
     assert wheel.ledger["excess"].parameters["variance"] == pytest.approx(
@@ -79,8 +81,8 @@ def test_the_excess_block_passes_check_block_beside_a_floor(noise_floor):
     check_block(
         noise_floor.ExcessNoiseBlock("excess"),
         observed,
-        role="noise",
         noise_blocks=(FixedNoiseBlock("floor", white_covariance(observed, 0.25)),),
+        num_frequency_divisions=32,
     )
 
 
@@ -107,9 +109,9 @@ def test_a_different_floor_moves_the_excess_posterior(noise_floor):
     # 0.5 must leave an excess of 0.5, so the block has to read the floor it is
     # handed rather than assume the example's own 0.25.
     observed = noise_floor.make_observed(seed=0)
-    wheel = Wheel(observed, random_seed=1)
-    wheel.add(FixedNoiseBlock("floor", white_covariance(observed, 0.5)), role="noise")
-    wheel.add(noise_floor.ExcessNoiseBlock("excess"), role="noise")
+    wheel = Wheel(observed, num_frequency_divisions=32, random_seed=1)
+    wheel.add(FixedNoiseBlock("floor", white_covariance(observed, 0.5)))
+    wheel.add(noise_floor.ExcessNoiseBlock("excess"))
     chain: list[float] = []
 
     def collect(cycle, w):

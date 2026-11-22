@@ -6,10 +6,11 @@ import numpy as np
 import pytest
 
 from conftest import starting_at, white_covariance
-from enchilada import FixedNoiseBlock, Wheel
+from enchilada import FixedNoiseBlock, Wheel, transform
 
 
 class Counter:
+    role = "signal"
     name = "counter"
 
     @dataclass
@@ -29,9 +30,9 @@ class Counter:
 
 
 def test_ledger_carries_estimates_and_block_keeps_continuation(observed):
-    wheel = Wheel(observed, random_seed=4)
+    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=4)
     block = Counter()
-    wheel.add(block, role="signal")
+    wheel.add(block)
     assert block.state.n == 0
     initial = wheel.ledger["counter"].parameters["a"]
     wheel.run(2)
@@ -41,20 +42,22 @@ def test_ledger_carries_estimates_and_block_keeps_continuation(observed):
 
 def test_pristine_working_and_input_are_independent(observed):
     original = observed.channel_data["A"].copy()
-    wheel = Wheel(observed)
+    wheel = Wheel(observed, num_frequency_divisions=8)
     observed.channel_data["A"][:] = 100
     wheel.observed_data.channel_data["A"][:] = 200
     wheel.working_residual.channel_data["A"][:] = 300
     np.testing.assert_array_equal(wheel.observed_data.channel_data["A"], original)
-    np.testing.assert_array_equal(wheel.working_residual.channel_data["A"], original)
+    np.testing.assert_allclose(
+        wheel.working_residual.channel_data["A"], original, rtol=1e-12, atol=1e-12
+    )
 
 
 def test_block_state_parameters_are_copied_on_adoption_and_read(observed):
     initial = observed.zero_block_state(
         parameters={"a": 0.0, "amplitudes": [np.ones(2)]}
     )
-    wheel = Wheel(observed)
-    wheel.add(starting_at(Counter(), initial), role="signal")
+    wheel = Wheel(observed, num_frequency_divisions=8)
+    wheel.add(starting_at(Counter(), initial))
     initial.parameters["amplitudes"][0][:] = 10
     wheel.ledger["counter"].parameters["amplitudes"][0][:] = 20
     np.testing.assert_array_equal(
@@ -81,17 +84,23 @@ def test_failed_sample_rolls_back_published_state_data_and_rng(observed):
                 )
             return result
 
-    actual, expected = Wheel(observed, random_seed=5), Wheel(observed, random_seed=5)
+    actual, expected = (
+        Wheel(observed, num_frequency_divisions=8, random_seed=5),
+        Wheel(observed, num_frequency_divisions=8, random_seed=5),
+    )
     block = FailsOnce()
-    actual.add(block, role="signal")
-    expected.add(Counter(), role="signal")
+    actual.add(block)
+    expected.add(Counter())
     before = actual.ledger["counter"].parameters.copy()
     with pytest.raises(ValueError, match="non-finite"):
         actual.run(1)
     assert actual.ledger["counter"].parameters == before
     assert block.state.n == 1
-    np.testing.assert_array_equal(
-        actual.working_residual.channel_data["A"], observed.channel_data["A"]
+    np.testing.assert_allclose(
+        actual.working_residual.channel_data["A"],
+        observed.channel_data["A"],
+        rtol=1e-12,
+        atol=1e-12,
     )
     actual.run(1)
     expected.run(1)
@@ -100,9 +109,12 @@ def test_failed_sample_rolls_back_published_state_data_and_rng(observed):
 
 def test_separate_blocks_keep_independent_campaign_continuation(observed):
     first, second = Counter(), Counter()
-    one, two = Wheel(observed, random_seed=7), Wheel(observed, random_seed=7)
-    one.add(first, role="signal")
-    two.add(second, role="signal")
+    one, two = (
+        Wheel(observed, num_frequency_divisions=8, random_seed=7),
+        Wheel(observed, num_frequency_divisions=8, random_seed=7),
+    )
+    one.add(first)
+    two.add(second)
     one.run(2)
     assert first.state.n == 2
     assert second.state.n == 0
@@ -122,9 +134,12 @@ def test_retained_rng_reference_cannot_advance_campaign(observed):
                 conditional_residual, covariance, current_block_state, rng=rng
             )
 
-    actual, expected = Wheel(observed, random_seed=11), Wheel(observed, random_seed=11)
-    actual.add(RetainsRng(), role="signal")
-    expected.add(Counter(), role="signal")
+    actual, expected = (
+        Wheel(observed, num_frequency_divisions=8, random_seed=11),
+        Wheel(observed, num_frequency_divisions=8, random_seed=11),
+    )
+    actual.add(RetainsRng())
+    expected.add(Counter())
     actual.run(1)
     expected.run(1)
     retained[0].normal(size=100)
@@ -156,13 +171,16 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
                 return result.with_covariance(white_covariance(conditional_residual, 1))
             return result
 
-    actual, expected = Wheel(observed, random_seed=12), Wheel(observed, random_seed=12)
+    actual, expected = (
+        Wheel(observed, num_frequency_divisions=8, random_seed=12),
+        Wheel(observed, num_frequency_divisions=8, random_seed=12),
+    )
     block = Invalid()
-    actual.add(block, role="signal")
-    expected.add(Counter(), role="signal")
+    actual.add(block)
+    expected.add(Counter())
     expected_error, message = {
         "copy": (RuntimeError, "cannot copy parameter"),
-        "covariance": (ValueError, "registered as a signal block"),
+        "covariance": (ValueError, "declares role 'signal'"),
         "exception": (RuntimeError, "sampler failed"),
     }[failure]
     with pytest.raises(expected_error, match=message):
@@ -175,12 +193,13 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
     assert actual.ledger["counter"].parameters == expected.ledger["counter"].parameters
 
 
-# "time" on time observations takes the Wheel's same-grid short-circuit.
-@pytest.mark.parametrize("data_domain", [None, "time"])
+# None registers on the arrival (time) grid and receives a translated covariance;
+# "wdm" is the home grid, where the Wheel hands over a deep copy of its own sum.
+@pytest.mark.parametrize("data_domain", [None, "wdm"])
 def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domain):
     covariance = white_covariance(observed, 1)
-    wheel = Wheel(observed)
-    wheel.add(FixedNoiseBlock("noise", covariance), role="noise")
+    wheel = Wheel(observed, num_frequency_divisions=8)
+    wheel.add(FixedNoiseBlock("noise", covariance))
     covariance.blocks.setflags(write=True)
     covariance.A[:] *= 2
     inspected = wheel.covariance
@@ -193,17 +212,20 @@ def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domai
             covariance.A[:] *= 4
             return current_block_state
 
-    wheel.add(EditsNoise(), role="signal", data_domain=data_domain)
+    wheel.add(EditsNoise(), data_domain=data_domain)
     wheel.run(1)
-    np.testing.assert_array_equal(wheel.covariance.A, 1)
+    np.testing.assert_allclose(wheel.covariance.A, 1 / observed.fs, rtol=1e-12)
     np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 1)
 
 
 def test_residual_overflow_is_rejected_before_registration(observed):
+    # WDM observations are the home grid itself, so nothing is transformed and
+    # the overflow happens in the subtraction, as this test means it to.
+    data = transform(observed, "wdm", num_frequency_divisions=8)
     data = replace(
-        observed,
+        data,
         channel_data={
-            ch: np.full_like(x, 1e308) for ch, x in observed.channel_data.items()
+            ch: np.full_like(x, 1e308) for ch, x in data.channel_data.items()
         },
     )
 
@@ -214,7 +236,6 @@ def test_residual_overflow_is_rejected_before_registration(observed):
                 Counter(),
                 data.block_state({ch: -x for ch, x in data.channel_data.items()}),
             ),
-            role="signal",
         )
     assert len(wheel.ledger) == 0
     np.testing.assert_array_equal(

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed, white_covariance
-from enchilada import BlockState, FixedNoiseBlock, Wheel
+from enchilada import BlockState, FixedNoiseBlock, Wheel, transform
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -32,6 +32,8 @@ class RecordingEcho(EchoBlock):
 class FlatNoiseBlock:
     """A noise block publishing white noise of `level` from both methods."""
 
+    role = "noise"
+
     def __init__(self, name, level, seen=None):
         self.name = name
         self.level = level
@@ -57,17 +59,24 @@ class TestCheckBlock:
             block_under_test=EchoBlock(name="echo"),
             observed_data=observed,
             num_cycles=2,
-            role="signal",
+            num_frequency_divisions=8,
             noise_blocks=(FixedNoiseBlock("noise", white_covariance(observed, 1.0)),),
             random_seed=0,
         )
 
     def test_conforming_signal_block_passes_without_noise(self, observed):
-        check_block(EchoBlock(name="echo"), observed, role="signal")
+        check_block(EchoBlock(name="echo"), observed, num_frequency_divisions=8)
 
-    def test_role_is_required(self, observed):
+    def test_a_signal_block_among_the_noise_blocks_is_refused(self, observed):
+        with pytest.raises(ValueError, match="noise_blocks entry 'echo' declares role"):
+            check_block(
+                EchoBlock(name="under_test"),
+                observed,
+                noise_blocks=(EchoBlock(name="echo"),),
+                num_frequency_divisions=8,
+            )
         with pytest.raises(TypeError, match="role"):
-            check_block(EchoBlock(name="echo"), observed)
+            check_block(EchoBlock(name="echo"), observed, **{"role": "signal"})
 
     def test_conforming_in_frequency_domain(self, rng):
         n = 64
@@ -78,7 +87,7 @@ class TestCheckBlock:
                 ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")
             },
         )
-        check_block(EchoBlock(name="echo"), obs, role="signal")
+        check_block(EchoBlock(name="echo"), obs, num_frequency_divisions=8)
 
     def test_non_block_state_return_caught(self, observed):
         class Bad(EchoBlock):
@@ -93,7 +102,7 @@ class TestCheckBlock:
                 return {"A": np.zeros(1)}  # not a BlockState
 
         with pytest.raises(TypeError, match="must return a BlockState"):
-            check_block(Bad(name="bad"), observed, role="signal")
+            check_block(Bad(name="bad"), observed, num_frequency_divisions=8)
 
     def test_off_grid_block_state_caught(self, observed):
         class Drifter(EchoBlock):
@@ -112,10 +121,14 @@ class TestCheckBlock:
                 )
 
         with pytest.raises(ValueError, match="length 3, expected"):
-            check_block(Drifter(name="drift"), observed, role="signal")
+            check_block(Drifter(name="drift"), observed, num_frequency_divisions=8)
 
     def test_conforming_noise_block_passes(self, observed):
-        check_block(FlatNoiseBlock("noise", 1.0), observed.to_frequency(), role="noise")
+        check_block(
+            FlatNoiseBlock("noise", 1.0),
+            observed.to_frequency(),
+            num_frequency_divisions=8,
+        )
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoBlock):
@@ -123,13 +136,17 @@ class TestCheckBlock:
                 return conditional_residual.block_state().with_covariance(object())
 
         with pytest.raises(TypeError, match="Covariance"):
-            check_block(BadNoise(name="bad"), observed, role="noise")
+            check_block(BadNoise(name="bad"), observed, num_frequency_divisions=8)
 
     def test_role_violations_are_caught(self, observed):
-        with pytest.raises(ValueError, match="registered as a signal block"):
-            check_block(FlatNoiseBlock("noise", 1.0), observed, role="signal")
-        with pytest.raises(ValueError, match="registered as a noise block"):
-            check_block(EchoBlock(name="echo"), observed, role="noise")
+        turncoat = FlatNoiseBlock("noise", 1.0)
+        turncoat.role = "signal"
+        with pytest.raises(ValueError, match="declares role 'signal'"):
+            check_block(turncoat, observed, num_frequency_divisions=8)
+        echo = EchoBlock(name="echo")
+        echo.role = "noise"
+        with pytest.raises(ValueError, match="declares role 'noise'"):
+            check_block(echo, observed, num_frequency_divisions=8)
 
     def test_noise_blocks_register_first_and_the_signal_block_receives_their_sum(
         self, observed
@@ -139,7 +156,7 @@ class TestCheckBlock:
             RecordingEcho("echo", seen),
             observed,
             num_cycles=2,
-            role="signal",
+            num_frequency_divisions=8,
             noise_blocks=(
                 FixedNoiseBlock("floor", white_covariance(observed, 1.0)),
                 FlatNoiseBlock("excess", 2.0),
@@ -147,7 +164,7 @@ class TestCheckBlock:
         )
         assert len(seen) == 3  # initial_sample and two samples
         for received in seen:
-            np.testing.assert_array_equal(received, 3.0)
+            np.testing.assert_allclose(received, 3.0)
 
     def test_a_noise_block_under_test_receives_the_other_noise_blocks(self, observed):
         seen = []
@@ -155,12 +172,12 @@ class TestCheckBlock:
             FlatNoiseBlock("excess", 2.0, seen),
             observed,
             num_cycles=2,
-            role="noise",
+            num_frequency_divisions=8,
             noise_blocks=(FixedNoiseBlock("floor", white_covariance(observed, 1.0)),),
         )
         assert len(seen) == 3
         for received in seen:
-            np.testing.assert_array_equal(received, 1.0)  # the floor, not itself
+            np.testing.assert_allclose(received, 1.0)  # the floor, not itself
 
     def test_block_without_initial_sample_is_refused(self, observed):
         class SampleOnly:
@@ -177,7 +194,7 @@ class TestCheckBlock:
                 return current_block_state
 
         with pytest.raises(TypeError, match="does not implement initial_sample"):
-            check_block(SampleOnly(), observed, role="signal")
+            check_block(SampleOnly(), observed, num_frequency_divisions=8)
 
     def test_failing_initial_sample_is_caught(self, observed):
         class BadStart(EchoBlock):
@@ -185,7 +202,7 @@ class TestCheckBlock:
                 return {"A": np.zeros(1)}  # not a BlockState
 
         with pytest.raises(TypeError, match="initial_sample must return a BlockState"):
-            check_block(BadStart(name="bad"), observed, role="signal")
+            check_block(BadStart(name="bad"), observed, num_frequency_divisions=8)
 
 
 class TestFixedNoiseBlock:
@@ -193,39 +210,40 @@ class TestFixedNoiseBlock:
         check_block(
             FixedNoiseBlock("floor", white_covariance(observed, 1.0)),
             observed,
-            role="noise",
+            num_frequency_divisions=8,
         )
 
     def test_gives_a_campaign_a_known_covariance(self, observed):
         covariance = white_covariance(observed, 7.0)
-        wheel = Wheel(observed)
-        wheel.add(FixedNoiseBlock("floor", covariance), role="noise")
-        np.testing.assert_array_equal(wheel.covariance.A, 7.0)
-        wheel.add(EchoBlock("echo"), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(FixedNoiseBlock("floor", covariance))
+        np.testing.assert_allclose(wheel.covariance.A, 7.0 / observed.fs)
+        wheel.add(EchoBlock("echo"))
         wheel.run(2)
-        np.testing.assert_array_equal(wheel.covariance.A, 7.0)
+        np.testing.assert_allclose(wheel.covariance.A, 7.0 / observed.fs)
         np.testing.assert_array_equal(wheel.ledger["floor"].covariance.A, 7.0)
         assert wheel.ledger["floor"].template is None
 
     def test_must_be_registered_on_its_covariance_grid(self, observed):
-        wheel = Wheel(observed)
+        wheel = Wheel(observed, num_frequency_divisions=8)
         spectral = white_covariance(observed.to_frequency(), 1.0)
         with pytest.raises(
             ValueError, match="floor.initial_sample covariance is on grid"
         ):
-            wheel.add(FixedNoiseBlock("floor", spectral), role="noise")
+            wheel.add(FixedNoiseBlock("floor", spectral))
         assert len(wheel.ledger) == 0
-        wheel.add(
-            FixedNoiseBlock("floor", spectral), role="noise", data_domain="frequency"
+        wheel.add(FixedNoiseBlock("floor", spectral), data_domain="frequency")
+        assert wheel.covariance.grid == wheel.home_grid
+        np.testing.assert_allclose(
+            transform(wheel.covariance, "frequency").A, spectral.A, rtol=1e-12
         )
-        assert wheel.covariance.grid == observed.to_frequency().grid
 
 
 class TestEchoBlock:
     def test_keeps_sampling_counter_in_local_state(self, observed):
         echo = EchoBlock(name="echo")
-        wheel = Wheel(observed)
-        wheel.add(echo, role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(echo)
         wheel.run(3)
         assert echo.state.num_sample_calls == 3
         published = wheel.ledger["echo"]
@@ -235,12 +253,15 @@ class TestEchoBlock:
         assert echo.state.metadata == {}
 
     def test_contributes_a_zero_signal(self, observed):
-        wheel = Wheel(observed)
-        wheel.add(EchoBlock(name="echo"), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(EchoBlock(name="echo"))
         wheel.run(1)
         for ch in observed.channel_names:
-            np.testing.assert_array_equal(
-                wheel.residual().channel_data[ch], observed.channel_data[ch]
+            np.testing.assert_allclose(
+                wheel.residual().channel_data[ch],
+                observed.channel_data[ch],
+                rtol=1e-12,
+                atol=1e-12,
             )
 
 

@@ -35,9 +35,11 @@ print(f"observed: N={observed.N}, fs={observed.fs} Hz, Tobs={observed.Tobs:.0f} 
 ucb = EchoBlock(name="ucb")
 mbhb = EchoBlock(name="mbhb")
 
-wheel = Wheel(observed, random_seed=0)
-wheel.add(ucb, role="signal")
-wheel.add(mbhb, role="signal")
+# The campaign lives on a WDM home grid: 32 rows x 32 columns for 1024 samples.
+# EchoBlock declares role = "signal"; Wheel reads the attribute at add.
+wheel = Wheel(observed, num_frequency_divisions=32, random_seed=0)
+wheel.add(ucb)
+wheel.add(mbhb)
 
 wheel.run(num_cycles=3)
 

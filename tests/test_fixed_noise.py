@@ -14,6 +14,8 @@ def test_it_is_a_block_publishing_its_covariance_from_both_methods(observed, rng
     block = FixedNoiseBlock("floor", white_covariance(observed, 2.0))
     assert isinstance(block, Block)
     assert block.name == "floor"
+    assert block.role == "noise"
+    assert FixedNoiseBlock.role == "noise"
     start = block.initial_sample(observed, None, rng=rng)
     later = block.sample(observed, None, BlockState(), rng=rng)
     for published in (start, later):

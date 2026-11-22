@@ -20,11 +20,12 @@ this folder assumes you have read it.
    covariance, calls `initial_sample` and `sample` by hand with asserts on
    the returned state, and runs `check_block` with the covariance as a
    `FixedNoiseBlock`. Edits to `block.py` take effect cell by cell.
-3. **Run `wheel.ipynb`.** A `Wheel` on the same window, the covariance
-   registered as a `FixedNoiseBlock` (`role="noise"`), the block registered
-   on its grid with `role="signal"`, a chain collected through
-   `on_cycle_complete`, the posterior against a truth you type in, and a
-   trace plot.
+3. **Run `wheel.ipynb`.** A `Wheel` on the same window with a WDM home grid of
+   `FORGE_ROWS` rows (default 64), the covariance registered as a
+   `FixedNoiseBlock` (a block with `role = "noise"`), `ForgeBlock` (which
+   declares `role = "signal"`) registered on its grid, a chain collected
+   through `on_cycle_complete`, the posterior against a truth you type in, and
+   a trace plot.
 
 ## Setup
 
@@ -39,12 +40,16 @@ ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5 uv run --no-sync jupyter lab forge/
 In a running kernel, `%env ENCHILADA_MOJITO_L1=/path/to/simulated_L1.h5` in a
 cell sets it before the settings cell runs.
 
-The notebooks read three environment variables:
+The notebooks read four environment variables (the decimated window has
+`FORGE_DURATION_S` x 4 Hz / `FORGE_FACTOR` samples; for an hour at factor 10 that
+is 1440, so 48, 60 or 72 rows work and 64 does not; a bad count stops the
+settings cell early):
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `ENCHILADA_MOJITO_L1` | the Mojito-layout L1 file | required |
 | `FORGE_DURATION_S` | native seconds to load | `86400` (one day) |
+| `FORGE_ROWS` | an even row count of the WDM home grid that divides the window's sample count with an even quotient; more rows mean narrower bands (the default day at factor 10 gives 34560 samples = 64 x 540) | `64` |
 | `FORGE_FACTOR` | decimation factor | `10` (0.4 Hz from a 4 Hz file such as Mojito's) |
 
 `data.py` is shared by both notebooks. `load_window` goes through
@@ -73,24 +78,40 @@ asserts on it. To test recovery, inject a signal into the window the way
 window with a nonzero `tdi_flags` sample; `load_window(start_offset_s=...)`
 moves it.
 
-To move the block to another grid, change `DOMAIN` in both notebooks (for
-WDM also `NUM_FREQUENCY_DIVISIONS`, the row count: it and the decimated
-window length divided by it must both be even integers, so choose
-`FORGE_DURATION_S` to fit, or load with `load_window(..., domain="wdm",
-num_frequency_divisions=..., num_time_divisions=...)`, which derives the
-duration), render `_template` on that grid, update `_check_residual`, and
-rewrite the likelihood in `sample` (`inner_product` is the frequency
-grid's). A signal block receives the sum of the noise blocks' covariances,
-which lives on one grid, so every block registers on that grid (a
-covariance does not translate between grids); another grid means moving
-`DOMAIN`, and with it the covariance, for the whole campaign.
+To move the block to another grid, change `DOMAIN` in both notebooks, render
+`_template` on that grid, update `_check_residual`, and rewrite the likelihood
+in `sample` (`inner_product` is the frequency grid's). The campaign itself
+lives on a WDM home grid of `NUM_FREQUENCY_DIVISIONS` rows (`FORGE_ROWS`,
+default 64): that count and the decimated window length divided by it must
+both be even integers, so choose `FORGE_DURATION_S` to fit, or load with
+`load_window(..., domain="wdm", num_frequency_divisions=...,
+num_time_divisions=...)`, which derives the duration. `DOMAIN = "wdm"` serves
+the block on the home grid itself. A block on any other grid is served by
+exact data transforms and receives the noise sum translated onto its grid
+through the diagonal spectral-model rule (exact for the white stand-in PSD,
+band-smoothed for a coloured one; see the translation section of the
+[top-level README](../README.md#time-frequency-and-wdm-translation)), so
+blocks on different grids can share one campaign. The ledger keeps a noise
+block's covariance on the grid it was published on (templates are stored on
+the home grid), the home-grid sum receives its translation, and each block
+receives the sum on its own grid.
 
 ## Caveats
 
 - **Time grid, white noise only.** enchilada's time-grid covariance is one
   variance per sample, so `analytic_covariance` accepts only a white PSD
   there and refuses a coloured one. Coloured noise needs the frequency or
-  WDM grid.
+  WDM grid. (In a campaign a time-grid block does receive a coloured sum, as
+  its mean power in one flat variance.)
+- **Band width.** A frequency-grid block receives the home-grid sum averaged
+  over bands of width fs / (2 `FORGE_ROWS`): 3.125 mHz at 64 rows and 0.4 Hz.
+  The placeholder's 1 mHz line then sits in band 0 (DC to 1.56 mHz), where the
+  smoothing is worst. Through a real Wheel, the forge test's own
+  `coloured_psd` (an f^-2 corner at 1 mHz) reaches a frequency-grid block 59
+  times too large at 1 mHz with 64 rows, and 1.5 times with 128. Raise
+  `FORGE_ROWS` before swapping in a red PSD (for the default day, e.g. 540
+  rows x 64 columns). Whether the approximation is acceptable is yours to
+  judge; white noise is exact at any row count.
 - **Edge transient.** `decimate` leaves 40 filter-transient samples at each
   end of the record (`enchilada.resample.edge_samples`); nothing is trimmed,
   and on a WDM grid the transient leaks a few columns inward.
@@ -98,9 +119,10 @@ covariance does not translate between grids); another grid means moving
   the new Nyquist frequency, so the PSD of the native noise overstates the
   cells above that (conservative) and the white time-grid variance by about
   13 %. A WDM cell's variance is half the PSD averaged across its band
-  (`domania.wdm_covariance`), so each cell's variance is right across
-  notches and steep walls (the diagonal covariance still drops the
-  correlations a steep wall puts between neighbouring cells); row 0
+  (`domania.wdm_covariance`), so each home-grid cell's variance is right
+  across notches and steep walls (the diagonal covariance still drops the
+  correlations a steep wall puts between neighbouring cells); a block on
+  another grid receives that sum band-averaged, see Band width. Row 0
   interleaves DC and Nyquist.
 - **White stand-in.** The notebooks' `LEVEL` is a white PSD at the loaded
   window's own variance (for white native noise, about 12 % below the

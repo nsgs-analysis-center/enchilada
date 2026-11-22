@@ -8,37 +8,64 @@ from typing import Literal
 import numpy as np
 
 from enchilada._sum_tree import NoiseSum, Signal, SignalSum
+from enchilada._transforms import transform_channels
 from enchilada.block import Block
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
-from enchilada.domains import Grid
+from enchilada.domains import Grid, resolve_wdm_grid
 from enchilada.ledger import Ledger
 from enchilada.translation import _target_grid, transform
 
 Role = Literal["signal", "noise"]
 ROLES: tuple[Role, ...] = ("signal", "noise")
 
+_PROTOCOL = (
+    "a Block needs name, role ('signal' or 'noise'), "
+    "initial_sample(conditional_residual, covariance, *, rng) and "
+    "sample(conditional_residual, covariance, current_block_state, *, rng)."
+)
+
 
 class Wheel:
     """Run blocks while owning their accepted physical estimates and shared data.
 
-    The pristine observation is copied at construction. A second L1Data stores
-    the full working residual, rebuilt after every accepted update. For block i,
-    the input is d - sum(j != i, T_j); the block's own signal remains in its input.
-    An absent TDI signal contributes zero, including when a block previously
-    returned a signal. Ledger holds complete BlockState snapshots. Public data and
-    covariance access returns copies. The ledger property returns a live handle;
-    indexing and snapshot() copy its contents. Treat orbit resources as immutable.
+    The campaign lives on one WDM grid, the home grid, chosen at construction:
+    time or frequency observations are transformed onto it once, exactly, and
+    WDM observations bring their own. The pristine observation is kept twice,
+    as it arrived (for `observed_data`) and on the home grid (the values every
+    residual is built from). A second home-grid L1Data stores the full working
+    residual, rebuilt after every accepted update. For block i, the input is
+    d - sum(j != i, T_j); the block's own signal remains in its input. An
+    absent TDI signal contributes zero, including when a block previously
+    returned a signal. Ledger holds complete BlockState snapshots: a signal
+    block's template on the home grid, a noise block's covariance as it was
+    published. The public data views (`observed_data`, `working_residual`,
+    `residual`, `contribution`) come back on the arrival grid through one exact
+    inverse transform; `covariance` is on the home grid. Public data and
+    covariance access returns copies. The ledger property returns a live
+    handle; indexing and snapshot() copy its contents. Treat orbit resources as
+    immutable.
 
-    Every block is registered as a signal block or a noise block. Signal blocks
-    publish templates, which Wheel sums into the residuals; noise blocks publish
-    covariances, which Wheel sums into the campaign covariance. A signal block
-    receives the sum over every noise block (None until one has published); a
-    noise block receives the sum over the other noise blocks (None when it is
-    alone) and its own last publication on current_block_state.covariance. A
-    noise block must return a covariance on every call and may not return a
-    template; a signal block may not return a covariance.
+    Every block declares its role in the attribute `role`, "signal" or
+    "noise", read once at `add`. Signal blocks publish templates, which Wheel
+    sums into the residuals; noise blocks publish covariances, which Wheel sums
+    into the campaign covariance. A signal block receives the sum over every
+    noise block (None until one has published); a noise block receives the sum
+    over the other noise blocks (None when it is alone) and its own last
+    publication on current_block_state.covariance. A noise block must return a
+    covariance on every call and may not return a template; a signal block may
+    not return a covariance.
+
+    A block is served on the grid it asks for at `add`: its residual and
+    current state by exact data transforms, the covariance it receives by
+    `transform(covariance, ...)`, which reads every covariance as a diagonal
+    spectral model (see `transform`). A template it returns is transformed
+    onto the home grid and a covariance it returns is translated onto the home
+    grid before entering the sums; the ledger keeps the covariance as
+    published. A block on the home grid pays no transform. The diagonal
+    approximation behind the covariance translation is the user's to assess;
+    Wheel does not restrict grid choices on its account.
 
     Registration calls the block's `initial_sample` with the residual of the
     blocks registered so far on the block's grid, the covariance its role
@@ -51,26 +78,28 @@ class Wheel:
     Use separate block instances for separate campaigns. Earlier successful
     updates in a failed cycle remain committed. Exceptions in on_cycle_complete
     occur after that entire cycle has committed.
-
-    Signals are stored on the observation grid. The covariance sum lives on the
-    grid of the first noise publication: a noise block registered on another
-    grid is refused at add, and a signal block on another grid is refused at
-    add or run, each with ValueError naming both grids. A block registered with
-    data_domain has its inputs and returned signal translated; a covariance is
-    never translated.
     """
 
     def __init__(
         self,
         observed_data: L1Data,
         *,
+        num_frequency_divisions: int | None = None,
+        num_time_divisions: int | None = None,
         random_seed: int | None = None,
     ) -> None:
-        """Initialize a campaign from observations.
+        """Initialize a campaign from observations on a WDM home grid.
 
         Args:
             observed_data: L1 observations and shared run settings. The Wheel
-                makes independent pristine and working copies.
+                keeps an independent arrival-grid copy and a home-grid copy.
+            num_frequency_divisions: Row count of the home grid. Time or
+                frequency observations need this or num_time_divisions; WDM
+                observations supply their own grid, and counts given here
+                must agree with it.
+            num_time_divisions: Column count of the home grid. The missing
+                count follows from the observation length; both counts must
+                be positive even integers whose product is the sample count.
             random_seed: Seed for the campaign's NumPy generator. None requests
                 nondeterministic initialization.
 
@@ -86,8 +115,40 @@ class Wheel:
                     "enchilada has no data-quality mask for gaps; "
                     "fill or trim them first"
                 )
-        self._observed_data = self._copy_data(observed_data)
-        self._working_residual = self._copy_data(observed_data)
+        arrival = self._copy_data(observed_data)
+        counts_given = (
+            num_frequency_divisions is not None or num_time_divisions is not None
+        )
+        if arrival.data_domain == "wdm":
+            if counts_given:
+                requested = resolve_wdm_grid(
+                    arrival.num_time_samples,
+                    num_frequency_divisions=num_frequency_divisions,
+                    num_time_divisions=num_time_divisions,
+                )
+                if requested != arrival.wdm_grid:
+                    raise ValueError(
+                        f"observed_data is on WDM grid {arrival.wdm_grid}, which "
+                        f"is the home grid, but {requested} was requested; omit "
+                        "the division counts or pass ones that agree"
+                    )
+            home = self._copy_data(arrival)
+        else:
+            if not counts_given:
+                raise ValueError(
+                    f"observed_data is on data_domain={arrival.data_domain!r}; "
+                    "the campaign lives on a WDM home grid, so pass "
+                    "num_frequency_divisions or num_time_divisions to choose it"
+                )
+            home = transform(
+                arrival,
+                "wdm",
+                num_frequency_divisions=num_frequency_divisions,
+                num_time_divisions=num_time_divisions,
+            )
+        self._arrival_data = arrival
+        self._home_data = home
+        self._working_residual = self._copy_data(home)
         self._ledger = Ledger()
         self._blocks: list[tuple[str, Block]] = []
         self._block_indices: dict[str, int] = {}
@@ -95,7 +156,6 @@ class Wheel:
         self._roles: dict[str, Role] = {}
         self._signal_sum = SignalSum()
         self._noise_sum = NoiseSum()
-        self._covariance_grid: Grid | None = None
         self._rng = np.random.default_rng(random_seed)
 
     @staticmethod
@@ -110,27 +170,37 @@ class Wheel:
             },
         )
 
+    @staticmethod
+    def _frequency_divisions(grid: Grid) -> int | None:
+        if grid.wdm_grid is None:
+            return None
+        return grid.wdm_grid.num_frequency_divisions
+
+    @property
+    def home_grid(self) -> Grid:
+        """The WDM grid the campaign lives on."""
+        return self._home_data.grid
+
     @property
     def observed_data(self) -> L1Data:
-        """A defensive copy of the pristine observation."""
-        return self._copy_data(self._observed_data)
+        """A defensive copy of the pristine observation, as it arrived."""
+        return self._copy_data(self._arrival_data)
 
     @property
     def working_residual(self) -> L1Data:
-        """A defensive copy of the current full residual."""
-        return self._copy_data(self._working_residual)
+        """A copy of the current full residual on the arrival grid."""
+        return self._on_grid(self._working_residual, self._arrival_data.grid)
 
     @property
     def covariance(self) -> Covariance | None:
-        """The sum over every noise block's covariance, as an independent copy.
+        """The sum over every noise block's covariance, on the home grid.
 
-        None until a noise block has published. The sum lives on the grid of
-        the first noise publication.
+        An independent copy; None until a noise block has published.
         """
         total = self._noise_sum.total
         if total is None:
             return None
-        # Leaves passed Covariance.copy at adoption and sums were built by
+        # Leaves were validated at adoption and sums were built by
         # Covariance.__add__ through the constructor: restore unvalidated.
         return deepcopy(total)
 
@@ -139,25 +209,35 @@ class Wheel:
         """Live state store; indexing copies entries, snapshot() copies all entries."""
         return self._ledger
 
+    def _on_grid(self, home_data: L1Data, grid: Grid) -> L1Data:
+        """Home-grid data on `grid`: an independent copy or one exact transform."""
+        if grid == self._home_data.grid:
+            return self._copy_data(home_data)
+        return transform(
+            home_data,
+            grid.data_domain,
+            num_frequency_divisions=self._frequency_divisions(grid),
+        )
+
     def add(
         self,
         block_to_register: Block,
         *,
-        role: Role,
         data_domain: str | None = None,
         num_frequency_divisions: int | None = None,
         num_time_divisions: int | None = None,
     ) -> None:
-        """Register a block under a role and adopt the start its initial_sample returns.
+        """Register a block under its declared role and adopt its initial_sample.
 
-        role is "signal" or "noise" and is checked before anything else. A
-        signal block publishes a template and never a covariance; a noise
-        block publishes a covariance on every call and never a template.
-        block_to_register must have a unique name and implement initial_sample
-        and sample. Failed registration leaves the campaign unchanged: an
-        exception from initial_sample, a return that is not a BlockState, an
-        off-grid or non-finite template, a field the role forbids or lacks, a
-        covariance on another grid than the block's, or a state that cannot be
+        block_to_register must have a unique name, a `role` attribute that is
+        "signal" or "noise", and implement initial_sample and sample. The role
+        is read here, once. A signal block publishes a template and never a
+        covariance; a noise block publishes a covariance on every call and
+        never a template. Failed registration leaves the campaign unchanged:
+        an exception from initial_sample, a return that is not a BlockState,
+        an off-grid or non-finite template, a field the role forbids or lacks,
+        a covariance on another grid than the block's, a covariance that does
+        not translate onto the home grid, or a state that cannot be
         deep-copied leaves the ledger, the block list, the residual, both sums
         and the Wheel RNG as they were.
 
@@ -165,44 +245,28 @@ class Wheel:
         minus the adopted starts of every block registered so far) on this
         block's grid, the covariance its role receives (the sum over every
         noise block for a signal block, the sum over the other noise blocks for
-        a noise block; None while that sum is empty) and a copy of the campaign
-        RNG that is committed with the state. Blocks therefore start in
+        a noise block; None while that sum is empty; translated to this block's
+        grid when that is not the home grid) and a copy of the campaign RNG
+        that is committed with the state. Blocks therefore start in
         registration order: register the noise blocks before the blocks whose
         starts need their covariance. The returned state is validated and
         adopted exactly like a sample return: its template must be on this
-        block's grid, and Wheel translates it to the observation grid for
-        storage. A block that must start at a chosen point takes that point in
-        its constructor and returns it from initial_sample.
+        block's grid, and Wheel transforms it onto the home grid for storage;
+        its covariance must be on this block's grid, and Wheel translates it
+        onto the home grid for the sum while the ledger keeps the original. A
+        block that must start at a chosen point takes that point in its
+        constructor and returns it from initial_sample.
 
         data_domain selects time, frequency or wdm for this block's residual,
-        current state and published covariance. None keeps the observation grid.
-        For WDM, specify either division count; the other follows from the
-        observation length. Both counts must be even. An existing observation
-        WDM grid is reused if neither count is supplied. The covariance sum
-        lives on the grid of the first noise publication; a noise block on
-        another grid is refused here, before initial_sample is called, and so
-        is a signal block once a covariance has been published.
+        current state and published covariance. None means the arrival grid of
+        the observations. "wdm" without division counts means the home grid,
+        which costs no transform; with counts that differ from the home grid's
+        it is another WDM grid, and the other count follows from the
+        observation length (both must be even).
         """
-        if role not in ROLES:
-            raise ValueError(f"role must be 'signal' or 'noise', got {role!r}")
-        observed = self._observed_data
-        if data_domain is None:
-            if num_frequency_divisions is not None or num_time_divisions is not None:
-                raise ValueError("WDM division counts require data_domain='wdm'")
-            block_grid = observed.grid
-        else:
-            block_grid = Grid(
-                data_domain,
-                observed.num_time_samples,
-                observed.sample_rate_hz,
-                _target_grid(
-                    data_domain,
-                    observed.num_time_samples,
-                    observed.wdm_grid,
-                    num_frequency_divisions,
-                    num_time_divisions,
-                ),
-            )
+        block_grid = self._block_grid(
+            data_domain, num_frequency_divisions, num_time_divisions
+        )
         block_name = getattr(block_to_register, "name", None)
         if not isinstance(block_name, str) or not block_name:
             raise ValueError(
@@ -212,18 +276,13 @@ class Wheel:
             raise ValueError(f"block name {block_name!r} already registered")
         if not callable(getattr(block_to_register, "sample", None)):
             raise TypeError(
-                f"block {block_name!r} does not implement sample; "
-                "a Block needs name, initial_sample(conditional_residual, "
-                "covariance, *, rng) and sample(conditional_residual, "
-                "covariance, current_block_state, *, rng)."
+                f"block {block_name!r} does not implement sample; {_PROTOCOL}"
             )
         if not callable(getattr(block_to_register, "initial_sample", None)):
             raise TypeError(
-                f"block {block_name!r} does not implement initial_sample; "
-                "a Block needs name, initial_sample(conditional_residual, "
-                "covariance, *, rng) and sample(conditional_residual, "
-                "covariance, current_block_state, *, rng)."
+                f"block {block_name!r} does not implement initial_sample; {_PROTOCOL}"
             )
+        role = self._declared_role(block_to_register, block_name)
         conditional_residual, covariance = self._block_inputs(
             block_name, block_grid, role=role, registered=False
         )
@@ -233,10 +292,6 @@ class Wheel:
             covariance=covariance,
             rng=candidate_rng,
         )
-        if block_grid != observed.grid:
-            new_block_state = self._canonical_state(
-                new_block_state, conditional_residual
-            )
         self._adopt(
             block_name,
             new_block_state,
@@ -246,6 +301,44 @@ class Wheel:
             block_to_register=block_to_register,
             block_grid=block_grid,
         )
+
+    def _block_grid(
+        self,
+        data_domain: str | None,
+        num_frequency_divisions: int | None,
+        num_time_divisions: int | None,
+    ) -> Grid:
+        """The grid a block asks for: the arrival grid, or one on the home record."""
+        if data_domain is None:
+            if num_frequency_divisions is not None or num_time_divisions is not None:
+                raise ValueError("WDM division counts require data_domain='wdm'")
+            return self._arrival_data.grid
+        home = self._home_data.grid
+        return Grid(
+            data_domain,
+            home.num_time_samples,
+            home.sample_rate_hz,
+            _target_grid(
+                data_domain,
+                home.num_time_samples,
+                home.wdm_grid,
+                num_frequency_divisions,
+                num_time_divisions,
+            ),
+        )
+
+    @staticmethod
+    def _declared_role(block_to_register: Block, block_name: str) -> Role:
+        """The block's `role` attribute, narrowed to a Role."""
+        declared = getattr(block_to_register, "role", None)
+        if declared is None:
+            raise TypeError(f"block {block_name!r} declares no role; {_PROTOCOL}")
+        if declared not in ROLES:
+            raise ValueError(
+                f"block {block_name!r} declares role {declared!r}; "
+                "a role is 'signal' or 'noise'"
+            )
+        return "signal" if declared == "signal" else "noise"
 
     def _block_inputs(
         self, block_name: str, block_grid: Grid, *, role: Role, registered: bool
@@ -257,56 +350,40 @@ class Wheel:
         signal block receives the sum over every noise block; a noise block
         receives the sum over the other noise blocks, which is the whole sum
         while it is being registered because its own slot does not exist yet.
+        Both are formed on the home grid and brought to the block's grid once:
+        the residual by an exact transform, the covariance by translation.
         """
-        if self._covariance_grid is not None and self._covariance_grid != block_grid:
-            if role == "noise":
-                raise ValueError(
-                    f"block {block_name!r} is registered on grid {block_grid} but "
-                    f"the campaign covariance is on grid {self._covariance_grid}; "
-                    "a covariance does not add across grids"
-                )
-            raise ValueError(
-                f"block {block_name!r} is registered on grid {block_grid} but the "
-                f"current covariance is on grid {self._covariance_grid}; a "
-                "covariance does not translate between grids. Register the block "
-                "on the covariance's grid, or have the noise block publish on the "
-                "block's grid."
+        residual_on_home = (
+            self._form_residual(
+                self._signal_sum.excluding(self._block_indices[block_name])
             )
-        conditional_residual = (
-            self.residual(exclude_block_name=block_name)
             if registered
-            else self.working_residual
+            else self._working_residual
         )
-        if block_grid != self._observed_data.grid:
-            conditional_residual = transform(
-                conditional_residual,
-                block_grid.data_domain,
-                num_frequency_divisions=self._frequency_divisions(block_grid),
-            )
+        conditional_residual = self._on_grid(residual_on_home, block_grid)
         if role == "noise" and registered:
             total = self._noise_sum.excluding(self._block_indices[block_name])
         else:
             total = self._noise_sum.total
-        # Stored covariances were validated when published or summed: restore
-        # an independent read-only copy without revalidating.
-        covariance = None if total is None else deepcopy(total)
+        if total is None:
+            covariance = None
+        elif block_grid == self._home_data.grid:
+            # Stored covariances were validated when published or summed:
+            # restore an independent read-only copy without revalidating.
+            covariance = deepcopy(total)
+        else:
+            try:
+                covariance = transform(
+                    total,
+                    block_grid.data_domain,
+                    num_frequency_divisions=self._frequency_divisions(block_grid),
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"covariance for block {block_name!r} does not translate onto "
+                    f"its grid {block_grid}: {error}"
+                ) from error
         return conditional_residual, covariance
-
-    @staticmethod
-    def _frequency_divisions(grid: Grid) -> int | None:
-        if grid.wdm_grid is None:
-            return None
-        return grid.wdm_grid.num_frequency_divisions
-
-    def _canonical_state(self, state: object, source_reference: L1Data) -> object:
-        if not isinstance(state, BlockState):
-            return state  # _adopt supplies the block/method-specific error.
-        return transform(
-            state,
-            self._observed_data.data_domain,
-            reference_data=source_reference,
-            num_frequency_divisions=self._frequency_divisions(self._observed_data.grid),
-        )
 
     def run(
         self,
@@ -342,12 +419,11 @@ class Wheel:
                     block_name, block_grid, role=role, registered=True
                 )
                 current_block_state = self._ledger[block_name]
-                translated = block_grid != self._observed_data.grid
-                if translated:
+                if block_grid != self._home_data.grid:
                     current_block_state = transform(
                         current_block_state,
                         block_grid.data_domain,
-                        reference_data=self._observed_data,
+                        reference_data=self._home_data,
                         num_frequency_divisions=self._frequency_divisions(block_grid),
                     )
                 new_block_state: object = block.sample(
@@ -356,10 +432,6 @@ class Wheel:
                     current_block_state=current_block_state,
                     rng=candidate_rng,
                 )
-                if translated:
-                    new_block_state = self._canonical_state(
-                        new_block_state, conditional_residual
-                    )
                 self._adopt(
                     block_name,
                     new_block_state,
@@ -372,9 +444,9 @@ class Wheel:
                 on_cycle_complete(cycle_index, self)
 
     def _form_residual(self, signal_sum: Signal) -> L1Data:
-        """Subtract an aggregate signal from pristine observations."""
+        """Subtract an aggregate signal from the home-grid observations."""
         channel_data = {}
-        for ch, observed_channel_values in self._observed_data.channel_data.items():
+        for ch, observed_channel_values in self._home_data.channel_data.items():
             if signal_sum is None:
                 residual_channel_values = observed_channel_values.copy()
             else:
@@ -383,10 +455,10 @@ class Wheel:
             if not np.isfinite(residual_channel_values).all():
                 raise ValueError(f"residual in channel {ch!r} became non-finite")
             channel_data[ch] = residual_channel_values
-        return replace(self._observed_data, channel_data=channel_data)
+        return replace(self._home_data, channel_data=channel_data)
 
     def residual(self, exclude_block_name: str | None = None) -> L1Data:
-        """Return a copied full residual or a block's conditional residual.
+        """Return a full or conditional residual on the arrival grid, as a copy.
 
         exclude_block_name identifies a registered block whose signal is left
         in the observations. None subtracts every block's signal.
@@ -394,24 +466,36 @@ class Wheel:
         if exclude_block_name is None:
             return self.working_residual
         self._require_block_name(exclude_block_name)
-        return self._form_residual(
-            self._signal_sum.excluding(self._block_indices[exclude_block_name])
+        return self._on_grid(
+            self._form_residual(
+                self._signal_sum.excluding(self._block_indices[exclude_block_name])
+            ),
+            self._arrival_data.grid,
         )
 
     def contribution(self, block_name: str) -> dict[str, np.ndarray]:
-        """Copy the registered block's summed TDI signal.
+        """Copy the registered block's summed TDI signal on the arrival grid.
 
         block_name must identify a registered block. An absent contribution
-        returns fresh zero arrays on the observation grid.
+        returns fresh zero arrays on the arrival grid.
         """
         self._require_block_name(block_name)
         signal = self._ledger._states_by_block_name[block_name].template
+        arrival = self._arrival_data
         if signal is None:
-            return {
-                ch: np.zeros_like(arr)
-                for ch, arr in self._observed_data.channel_data.items()
-            }
-        return {ch: arr.copy() for ch, arr in signal.items()}
+            return {ch: np.zeros_like(arr) for ch, arr in arrival.channel_data.items()}
+        home = self._home_data
+        if arrival.grid == home.grid:
+            return {ch: arr.copy() for ch, arr in signal.items()}
+        return transform_channels(
+            signal,
+            source_domain="wdm",
+            target_domain=arrival.data_domain,
+            num_time_samples=home.num_time_samples,
+            sample_rate_hz=home.sample_rate_hz,
+            source_wdm_grid=home.wdm_grid,
+            target_wdm_grid=arrival.wdm_grid,
+        )
 
     def _require_block_name(self, block_name: str) -> None:
         if block_name not in self._ledger:
@@ -435,8 +519,8 @@ class Wheel:
         source_method_name names the block method whose return is being adopted,
         for diagnostics. role decides which fields the state may and must carry.
         block_to_register is supplied only when adopting a new block's initial state.
-        block_grid is the grid the block is registered on; a published covariance
-        must be on it.
+        block_grid is the grid the block is registered on: a published template
+        or covariance must be on it, and is brought onto the home grid here.
         """
         if not isinstance(new_block_state, BlockState):
             raise TypeError(
@@ -446,14 +530,15 @@ class Wheel:
         # Snapshot BEFORE validation so subsequent use only touches owned state.
         candidate_block_state = deepcopy(new_block_state)
         candidate_block_state.__post_init__()
+        home = self._home_data
         signal = candidate_block_state.template
         if signal is not None:
             check_on_grid(
                 signal,
-                channel_names=self._observed_data.channel_names,
-                num_time_samples=self._observed_data.num_time_samples,
-                data_domain=self._observed_data.data_domain,
-                wdm_grid=self._observed_data.wdm_grid,
+                channel_names=home.channel_names,
+                num_time_samples=home.num_time_samples,
+                data_domain=block_grid.data_domain,
+                wdm_grid=block_grid.wdm_grid,
                 context_label=f"{block_name}.{source_method_name} template",
             )
             for ch, arr in signal.items():
@@ -468,34 +553,31 @@ class Wheel:
             else self._block_indices[block_name]
         )
         candidate_noise_sum = self._noise_sum
-        candidate_covariance_grid = self._covariance_grid
         if role == "signal":
             if candidate_block_state.covariance is not None:
                 raise ValueError(
                     f"{block_name}.{source_method_name} returned a covariance but "
-                    f"{block_name!r} is registered as a signal block"
+                    f"{block_name!r} declares role 'signal'"
                 )
         else:
             if signal is not None:
                 raise ValueError(
                     f"{block_name}.{source_method_name} returned a template but "
-                    f"{block_name!r} is registered as a noise block"
+                    f"{block_name!r} declares role 'noise'"
                 )
             if candidate_block_state.covariance is None:
                 raise ValueError(
                     f"{block_name}.{source_method_name} must return a covariance "
-                    f"because {block_name!r} is registered as a noise block"
+                    f"because {block_name!r} declares role 'noise'"
                 )
             # Revalidate: callers can edit arrays inside a frozen dataclass.
             # Unbound call: copy without trusting a subclass's overridden methods.
             candidate_covariance = Covariance.copy(candidate_block_state.covariance)
-            if candidate_covariance.channel_names != tuple(
-                self._observed_data.channel_names
-            ):
+            if candidate_covariance.channel_names != tuple(home.channel_names):
                 raise ValueError(
                     f"{block_name}.{source_method_name} covariance channel_names "
                     f"{candidate_covariance.channel_names} do not match the data's "
-                    f"{tuple(self._observed_data.channel_names)}"
+                    f"{tuple(home.channel_names)}"
                 )
             if candidate_covariance.grid != block_grid:
                 raise ValueError(
@@ -504,13 +586,38 @@ class Wheel:
                     f"grid {block_grid}; publish the covariance on the grid of the "
                     "data the block received"
                 )
+            if block_grid == home.grid:
+                home_covariance = candidate_covariance
+            else:
+                try:
+                    home_covariance = transform(
+                        candidate_covariance,
+                        "wdm",
+                        num_frequency_divisions=self._frequency_divisions(home.grid),
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"{block_name}.{source_method_name} covariance does not "
+                        f"translate onto the home grid {home.grid}: {error}"
+                    ) from error
+            # The ledger keeps the publication as made; the sum takes it on home.
             candidate_block_state = replace(
                 candidate_block_state, covariance=candidate_covariance
             )
             candidate_noise_sum = self._noise_sum.with_covariance(
-                block_index, candidate_covariance
+                block_index, home_covariance
             )
-            candidate_covariance_grid = block_grid
+        if signal is not None and block_grid != home.grid:
+            signal = transform_channels(
+                signal,
+                source_domain=block_grid.data_domain,
+                target_domain="wdm",
+                num_time_samples=home.num_time_samples,
+                sample_rate_hz=home.sample_rate_hz,
+                source_wdm_grid=block_grid.wdm_grid,
+                target_wdm_grid=home.wdm_grid,
+            )
+            candidate_block_state = replace(candidate_block_state, template=signal)
         candidate_block_states = {
             **self._ledger._states_by_block_name,
             block_name: candidate_block_state,
@@ -543,7 +650,6 @@ class Wheel:
         self._working_residual = candidate_residual
         self._signal_sum = candidate_signal_sum
         self._noise_sum = candidate_noise_sum
-        self._covariance_grid = candidate_covariance_grid
         self._block_indices = candidate_block_indices
         self._block_domains = candidate_block_domains
         self._roles = candidate_roles
