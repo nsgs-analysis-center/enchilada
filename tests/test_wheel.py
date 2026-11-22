@@ -592,7 +592,6 @@ class TestBoundaryGuards:
 
         class NoRebuild:
             name = "norebuild"
-            role = "signal"
 
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 calls.append("initial_sample")
@@ -653,7 +652,6 @@ class TestBoundaryGuards:
     def test_missing_sample_is_caught_at_registration(self, observed):
         class NoSample:
             name = "nosample"
-            role = "signal"
 
         with pytest.raises(TypeError) as excinfo:
             Wheel(observed, num_frequency_divisions=8).add(NoSample())

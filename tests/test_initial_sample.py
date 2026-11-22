@@ -109,7 +109,6 @@ def noise_start(level):
 def test_block_without_initial_sample_is_refused(observed):
     class SampleOnly:
         name = "sample_only"
-        role = "signal"
 
         def state_from_parameters(self, parameters, reference_data):
             # Stub: no test rebuilds this block's state.

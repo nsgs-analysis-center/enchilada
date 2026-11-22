@@ -607,7 +607,9 @@ class TestDeclaredRoles:
         wheel.run(1)
         assert len(block.state.states) == 2
 
-    def test_a_block_without_a_role_is_refused_before_the_method_checks(self, observed):
+    def test_a_block_without_a_role_is_refused_after_the_protocol_checks(
+        self, observed
+    ):
         class NoRole:
             name = "plain"
 
@@ -644,8 +646,8 @@ class TestDeclaredRoles:
             assert message.endswith(
                 "state_from_parameters(parameters, reference_data)."
             )
-        with pytest.raises(TypeError, match="block 'nosample' declares no role"):
-            wheel.add(NoSample())  # the role is checked before the methods
+        with pytest.raises(TypeError, match="does not implement sample"):
+            wheel.add(NoSample())  # the protocol checks still come first
         assert not isinstance(NoRole(), Block)
         assert isinstance(LevelSignal("x", 1.0), Block)
         assert_unchanged(wheel, before)

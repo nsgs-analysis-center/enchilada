@@ -190,18 +190,13 @@ def assert_unchanged(wheel, before):
 
 
 class TestRoles:
-    def test_the_role_is_read_from_the_block_before_the_method_checks(self, observed):
+    def test_the_role_is_read_from_the_block_after_the_protocol_checks(self, observed):
         class RoleLess(ConstSignal):
             role = None
-
-        class Bare:
-            name = "bare"
 
         wheel = Wheel(observed, num_frequency_divisions=8)
         with pytest.raises(TypeError, match="block 'a' declares no role"):
             wheel.add(RoleLess("a", 1.0))
-        with pytest.raises(TypeError, match="block 'bare' declares no role"):
-            wheel.add(Bare())
         typo = ConstSignal("b", 1.0)
         typo.role = "Noise"
         with pytest.raises(

@@ -86,17 +86,17 @@ class Wheel:
     at registration (the block's entry 0) and after each complete cycle,
     appended to an HDF5 file and flushed before `on_cycle_complete` runs;
     `wheel.l2` reads it live and `L2Data.open` afterwards. The file also holds
-    the observation's grid and the home grid, and `L2Data` rebuilds templates,
-    the covariance sum and the residual on the home grid, as the Wheel keeps
-    them. Parameters must then be recordable (numeric scalars or arrays; key
-    set, dtype kind and dimension count fixed at registration; any shape per
-    step); a state that is not is refused like an off-grid template. A partial
-    cycle records nothing (a block added after one draws its start against
-    in-memory states the file never holds, so `residual` at that step is not
-    the residual the block saw). If a write fails, the campaign in memory is
-    intact and one record ahead, the file is consistent up to its last step,
-    and the Wheel refuses further add and run. `close()` or a `with` block
-    closes the file.
+    the observation's grid and the home grid, and `L2Data` rebuilds templates
+    and the covariance sum on the home grid and the residual on the observation
+    grid, as the Wheel keeps and returns them. Parameters must then be
+    recordable (numeric scalars or arrays; key set, dtype kind and dimension
+    count fixed at registration; any shape per step); a state that is not is
+    refused like an off-grid template. A partial cycle records nothing (a block
+    added after one draws its start against in-memory states the file never
+    holds, so `residual` at that step is not the residual the block saw). If a
+    write fails, the campaign in memory is intact and one record ahead, the
+    file is consistent up to its last step, and the Wheel refuses further add
+    and run. `close()` or a `with` block closes the file.
     """
 
     def __init__(
@@ -340,13 +340,13 @@ class Wheel:
             self._recorder.check_block_name(block_name)
         if block_name in self._ledger:
             raise ValueError(f"block name {block_name!r} already registered")
-        role = self._declared_role(block_to_register, block_name)
         for method_name in ("sample", "initial_sample", "state_from_parameters"):
             if not callable(getattr(block_to_register, method_name, None)):
                 raise TypeError(
                     f"block {block_name!r} does not implement {method_name}; "
                     f"{_PROTOCOL}"
                 )
+        role = self._declared_role(block_to_register, block_name)
         conditional_residual, covariance = self._block_inputs(
             block_name, block_grid, role=role, registered=False
         )

@@ -407,7 +407,7 @@ Wheel uses descriptive arguments at each entry point:
 | Close the campaign file | `close()`; `with Wheel(...) as wheel:` closes on exit |
 | Open the campaign file | `wheel.l2` live; `L2Data.open(path, *, observed_data=None)` afterwards |
 | Read recorded values | `parameters(name, step=-1)`, `chain(name, key)`, `entries(name, key)` |
-| Rebuild from the file | `states`, `covariance`, `residual(step, blocks)`, on the home grid |
+| Rebuild from the file | `states`, `covariance` (home grid), `residual(step, blocks)` (observation grid) |
 | Implemented by every block | `block.state_from_parameters(parameters, reference_data)` |
 
 Inspect `wheel.home_grid`, `wheel.observed_data`, `wheel.working_residual`,
@@ -509,7 +509,7 @@ with Wheel(
     assert l2 is not None
     # (1001,): the start, then one row per cycle
     chain = l2.chain(my_block.name, "amplitude")
-    # the observation minus every signal block, on the home grid
+    # the observation minus every signal block, as wheel.working_residual
     latest = l2.residual(-1, [my_block])
 
 from enchilada import L2Data
@@ -556,13 +556,13 @@ zero-valued reference with no orbit). `wheel.l2` has the Wheel's observation.
 The file records the observation's grid and the Wheel's home grid
 (`l2.observation_grid`, `l2.home_grid`) beside each block's registered grid
 (`l2.block_grid(name)`). Each block rebuilds on its registered grid and the
-results then live on the home grid, where the Wheel keeps them: `states` holds
+results are combined on the home grid, as the Wheel combines them: `states` holds
 templates on the home grid and covariances on their blocks' grids, as
 `wheel.ledger` does; `covariance` is the sum of the noise blocks' covariances
 translated onto the home grid, as `wheel.covariance` is; and `residual` is the
-observation on the home grid minus the templates. `wheel.working_residual` is
-the same residual brought back to the arrival grid, so
-`transform(residual, observed.data_domain)` compares with it to rounding.
+observation on the home grid minus the templates, brought back to the
+observation grid by one exact transform, as `wheel.working_residual` is, so the
+two compare directly.
 
 `wheel.close()`, or leaving the `with` block, closes the file. Each record is
 flushed before `on_cycle_complete` runs, so a crash loses at most the cycle in
@@ -771,8 +771,8 @@ producing quietly wrong science:
   `channel_names`, array lengths must match `data_domain`/`num_time_samples`,
   and an attached orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
-- `Wheel` checks `name`, `role`, `initial_sample`, `sample` and
-  `state_from_parameters` before registration, then validates every start or
+- `Wheel` checks `name`, `initial_sample`, `sample`, `state_from_parameters`
+  and `role` before registration, then validates every start or
   returned signal's channels, lengths, real/complex kind, and finiteness.
   Each returned state is checked against the block's role (a signal block may
   not publish a covariance, a noise block must publish one and no template),

@@ -101,9 +101,10 @@ All notable changes to enchilada are documented here. The format follows
   observed_data=None)`; metadata (`num_steps`, `block_names`, `role`,
   `first_step`, `block_grid`, `observation_grid`, `home_grid`); recorded
   values (`parameters`, `chain`, `entries`); rebuilt states (`states`,
-  `covariance`, `residual(step, blocks)`) on the home grid, as the Wheel keeps
-  them: templates as in the ledger, the noise sum as `wheel.covariance`, and
-  the residual before the Wheel's inverse transform to the arrival grid.
+  `covariance`, `residual(step, blocks)`) as the Wheel keeps them: templates
+  on the home grid as in the ledger, the noise sum on the home grid as
+  `wheel.covariance`, and the residual formed on the home grid and returned on
+  the observation grid as `wheel.working_residual`.
 - The examples (`toy_fit.py` via `run_toy_fit(output_path=...)`,
   `noise_floor.py`, the Block authoring tutorial, `forge/wheel.ipynb`) record
   their campaigns and read chains back from the file;
@@ -116,8 +117,7 @@ All notable changes to enchilada are documented here. The format follows
   with one message naming the five members: `a Block needs name, role
   ('signal' or 'noise'), initial_sample(conditional_residual, covariance, *,
   rng), sample(conditional_residual, covariance, current_block_state, *, rng)
-  and state_from_parameters(parameters, reference_data).` The role is checked
-  before the methods.
+  and state_from_parameters(parameters, reference_data).`
 - **Breaking:** h5py is a core dependency (the Wheel writes HDF5), so Mojito
   loading and `NumericOrbit.from_hdf5` need no extra.
 - **Breaking:** the core depends on `numpy>=2.1`, `scipy>=1.14.1` and

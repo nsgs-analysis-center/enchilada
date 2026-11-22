@@ -534,11 +534,11 @@ class L2Data:
     on each block's registered grid, then bring the results onto the home grid
     the way the Wheel does: templates by an exact transform, covariances (for
     the sum) by `transform`'s diagonal translation. So `states` agrees with
-    `wheel.ledger`, `covariance` with `wheel.covariance` and `residual` with the
-    Wheel's working residual on the home grid (`wheel.working_residual` is that
-    residual brought back to the arrival grid). `residual` needs the observed
-    data: attach it with `observed_data` at `open` (it also carries the orbit
-    blocks may need); the live view has the Wheel's.
+    `wheel.ledger` and `covariance` with `wheel.covariance`, both on the home
+    grid; `residual` is formed on the home grid and returned on the observation
+    grid, where it agrees with `wheel.working_residual`. `residual` needs the
+    observed data: attach it with `observed_data` at `open` (it also carries
+    the orbit blocks may need); the live view has the Wheel's.
     """
 
     def __init__(
@@ -652,7 +652,7 @@ class L2Data:
 
     @property
     def home_grid(self) -> Grid:
-        """The grid the campaign kept its sums on; rebuilt states come back on it."""
+        """The Wheel's home grid; rebuilt templates and the noise sum are on it."""
         return _block_grid_from_attrs(
             self._require_open()["observation"].attrs,
             self.observation_grid,
@@ -1000,10 +1000,10 @@ class L2Data:
         """The sum of the noise blocks' covariances at `step`, on the home grid.
 
         Each rebuilt covariance is translated onto the home grid with
-        `transform`, as the Wheel's noise sum takes it, then summed. Every
-        noise block recorded at `step` must be in `blocks`; signal blocks and
-        blocks not yet registered are ignored. None when no noise block is
-        recorded at `step`.
+        `transform`, as the Wheel's noise sum takes it, then summed, so the sum
+        is on the home grid as `wheel.covariance` is. Every noise block recorded
+        at `step` must be in `blocks`; signal blocks and blocks not yet
+        registered are ignored. None when no noise block is recorded at `step`.
         """
         resolved = self._resolve_step(step)
         named = self._named(blocks, "covariance")
@@ -1030,12 +1030,12 @@ class L2Data:
     def residual(self, step: int, blocks: Iterable[Block]) -> L1Data:
         """The observation minus every signal block's rebuilt template at `step`.
 
-        On the home grid, as the Wheel forms it: the observation brought onto
-        the home grid once, minus the templates `states` returns.
-        `wheel.working_residual` is the same residual on the arrival grid;
-        `transform` brings this one there. Needs `observed_data`. Every signal
-        block recorded at `step` must be in `blocks`; noise blocks and blocks
-        not yet registered are ignored.
+        Formed on the home grid as the Wheel forms it (the observation brought
+        onto the home grid once, minus the templates `states` returns), then
+        returned on the observation grid by one exact transform, as
+        `wheel.working_residual` is. Needs `observed_data`. Every signal block
+        recorded at `step` must be in `blocks`; noise blocks and blocks not yet
+        registered are ignored.
         """
         if self._observed is None:
             raise ValueError(
@@ -1056,4 +1056,6 @@ class L2Data:
                 continue
             for name in channel_data:
                 channel_data[name] = channel_data[name] - state.template[name]
-        return replace(observed, channel_data=channel_data)
+        return _data_on_grid(
+            replace(observed, channel_data=channel_data), self.observation_grid
+        )

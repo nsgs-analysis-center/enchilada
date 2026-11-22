@@ -15,7 +15,6 @@ from enchilada.l2 import (
     _Recorder,
     _Schema,
 )
-from enchilada.translation import _data_on_grid
 
 
 def recorder(tmp_path, observed, name="campaign.h5"):
@@ -866,7 +865,7 @@ class TestL2Data:
             )
             np.testing.assert_allclose(covariance.blocks, expected.blocks)
             residual = l2.residual(0, [a, n])
-            assert residual.grid == home.grid
+            assert residual.grid == observed.grid  # formed at home, returned here
             again = l2.residual(0, [a, n])  # the home-grid observation is reused
             residual.channel_data["A"][...] = 0.0
             assert np.any(again.channel_data["A"])
@@ -874,7 +873,7 @@ class TestL2Data:
             for ch in observed.channel_names:
                 np.testing.assert_allclose(
                     residual.channel_data[ch],
-                    home.channel_data[ch] - template[ch],
+                    observed.channel_data[ch] - 2.0,
                     atol=1e-12,
                 )
 
@@ -1158,9 +1157,8 @@ def raw_entries(wheel):
 def assert_rebuilds_wheel(wheel, blocks, *, atol=0):
     """The file's rebuilt states, covariance and residual agree with the Wheel's.
 
-    Templates and the covariance sum are on the home grid in both; the Wheel's
-    public working residual is on the arrival grid, so the rebuilt home-grid
-    residual is compared with it brought onto the home grid.
+    Templates and the covariance sum are on the home grid in both; the residual
+    is on the observation grid in both.
     """
     channels = wheel.observed_data.channel_names
     assert wheel.l2.home_grid == wheel.home_grid
@@ -1190,16 +1188,10 @@ def assert_rebuilds_wheel(wheel, blocks, *, atol=0):
         assert rebuilt.grid == wheel.covariance.grid == wheel.home_grid
         np.testing.assert_allclose(rebuilt.blocks, wheel.covariance.blocks, atol=atol)
     residual = wheel.l2.residual(-1, blocks)
-    assert residual.grid == wheel.home_grid
-    working = _data_on_grid(wheel.working_residual, wheel.home_grid)
+    assert residual.grid == wheel.working_residual.grid == wheel.observed_data.grid
     for ch in channels:
         np.testing.assert_allclose(
-            residual.channel_data[ch], working.channel_data[ch], atol=atol
-        )
-    on_arrival = _data_on_grid(residual, wheel.observed_data.grid)
-    for ch in channels:
-        np.testing.assert_allclose(
-            on_arrival.channel_data[ch],
+            residual.channel_data[ch],
             wheel.working_residual.channel_data[ch],
             atol=atol,
         )
@@ -1601,7 +1593,7 @@ class TestWheelRecords:
             wheel.add(blocks[1])
             wheel.add(blocks[2], data_domain=data_domain, **divisions)
             wheel.run(3)
-            assert wheel.covariance.grid == wheel.home_grid
+            assert wheel.covariance.grid == wheel.home_grid != observed.grid
             states = wheel.l2.states(-1, blocks)
             assert states["noise"].covariance.grid == wheel.l2.block_grid("noise")
             assert wheel.l2.covariance(-1, blocks).grid == wheel.home_grid
@@ -1681,11 +1673,11 @@ class TestWheelRecords:
         with L2Data.open(path, observed_data=observed) as l2:
             assert l2.num_steps == 2
             np.testing.assert_array_equal(l2.chain("a", "amplitude"), [1.0, 1.5, 2.0])
+            assert l2.home_grid == wheel.home_grid
             residual = l2.residual(-1, [block])
-            assert residual.grid == l2.home_grid == wheel.home_grid
+            assert residual.grid == observed.grid
             np.testing.assert_allclose(
-                _data_on_grid(residual, observed.grid).channel_data["A"],
-                observed.channel_data["A"] - 2.0,
+                residual.channel_data["A"], observed.channel_data["A"] - 2.0
             )
 
     def test_close_inside_the_callback_stops_the_next_cycle_before_sampling(

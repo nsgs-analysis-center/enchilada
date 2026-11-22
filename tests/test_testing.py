@@ -189,7 +189,6 @@ class TestCheckBlock:
     def test_block_without_initial_sample_is_refused(self, observed):
         class SampleOnly:
             name = "sample_only"
-            role = "signal"
 
             def sample(
                 self,
