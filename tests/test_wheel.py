@@ -1,9 +1,10 @@
 """Wheel: the block-state ledger, the data-minus-others handoff, and its guards.
 
 Every campaign here lives on an 8-row WDM home grid while the observations
-arrive on the time grid unless a test says otherwise, so the public views (residuals, contributions, the
-covariance translated back) come back through one exact inverse transform and
-are compared to rounding (`CLOSE`); ledger entries and `observed_data` stay exact.
+arrive on the time grid unless a test says otherwise, so the public views
+(residuals, contributions, the covariance translated back) come back through
+one exact inverse transform and are compared to rounding (`CLOSE`); ledger
+entries and `observed_data` stay exact.
 """
 
 from dataclasses import dataclass, field, replace
