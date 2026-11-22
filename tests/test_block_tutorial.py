@@ -144,16 +144,16 @@ def test_tutorial_noise_block_refuses_another_noise_block(tutorial_definitions):
     WhiteNoiseVarianceBlock = tutorial_definitions.WhiteNoiseVarianceBlock
 
     # Registered second, its start already receives the floor's covariance.
-    second = Wheel(data, random_seed=0)
-    second.add(FixedNoiseBlock("floor", floor), role="noise")
+    second = Wheel(data, num_frequency_divisions=8, random_seed=0)
+    second.add(FixedNoiseBlock("floor", floor))
     with pytest.raises(ValueError, match="only noise block"):
-        second.add(WhiteNoiseVarianceBlock(), role="noise")
+        second.add(WhiteNoiseVarianceBlock())
 
     # Registered first, it starts alone; the floor registered after it reaches
-    # it at its first sample.
-    first = Wheel(data, random_seed=0)
-    first.add(WhiteNoiseVarianceBlock(), role="noise")
-    first.add(FixedNoiseBlock("floor", floor), role="noise")
+    # it at its first sample (translated onto its time grid, exact for white noise).
+    first = Wheel(data, num_frequency_divisions=8, random_seed=0)
+    first.add(WhiteNoiseVarianceBlock())
+    first.add(FixedNoiseBlock("floor", floor))
     with pytest.raises(ValueError, match="only noise block"):
         first.run(1)
 
