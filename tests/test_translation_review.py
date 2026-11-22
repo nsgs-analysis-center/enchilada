@@ -37,6 +37,8 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
     received = []
 
     class RecordInputs:
+        role = "signal"
+
         def __init__(self, name):
             self.name = name
 
@@ -52,67 +54,68 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
             received.append(("sample", self.name, conditional_residual.data_domain))
             return current_block_state
 
-    wheel = Wheel(observed)
-    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 2.0)), role="noise")
-    wheel.add(RecordInputs("default"), role="signal")
-    wheel.add(RecordInputs("explicit"), role="signal", data_domain="time")
+    wheel = Wheel(observed, num_frequency_divisions=8)
+    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 2.0)))
+    wheel.add(RecordInputs("default"))
+    wheel.add(RecordInputs("explicit"), data_domain="time")
     assert received == []
     wheel.run(1)
     assert received == [("sample", "default", "time"), ("sample", "explicit", "time")]
-    np.testing.assert_array_equal(wheel.covariance.A, 2.0)
+    np.testing.assert_allclose(wheel.covariance.A, 2.0 / observed.fs, rtol=1e-12)
 
 
-def test_same_grid_block_receives_the_covariance_without_transform(
+def test_home_grid_block_receives_the_covariance_without_transform(
     observed, monkeypatch
 ):
-    """An explicit domain equal to the observations' hands the covariance over
-    as a deep copy; nothing goes through transform()."""
-    import enchilada.translation
+    """A block on the home grid is handed the covariance as a deep copy; nothing
+    goes through transform(). WDM observations make the arrival grid the home
+    grid, so a default registration is on it too."""
+    import enchilada.wheel
 
-    delegate = enchilada.translation.transform
+    delegate = enchilada.wheel.transform
 
     def transform_without_covariance(value, *args, **kwargs):
         if isinstance(value, Covariance):
-            raise AssertionError("a same-grid covariance went through transform()")
+            raise AssertionError("a home-grid covariance went through transform()")
         return delegate(value, *args, **kwargs)
 
-    monkeypatch.setattr(
-        enchilada.translation, "transform", transform_without_covariance
-    )
+    monkeypatch.setattr(enchilada.wheel, "transform", transform_without_covariance)
     received = []
 
     class RecordCovariance:
-        name = "explicit"
+        role = "signal"
+        name = "probe"
 
         def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
             return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             covariance.check_compatible(conditional_residual)
-            received.append(float(covariance.A[0]))
+            received.append(float(covariance.A.flat[0]))
             return current_block_state
 
-    wheel = Wheel(observed)
-    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 2.0)), role="noise")
-    wheel.add(
-        starting_at(RecordCovariance(), BlockState()), role="signal", data_domain="time"
-    )
+    home = transform(observed, "wdm", num_frequency_divisions=8)
+    wheel = Wheel(home)
+    wheel.add(FixedNoiseBlock("noise", white_covariance(home, 2.0)))
+    wheel.add(starting_at(RecordCovariance(), BlockState()))
     wheel.run(2)
-    assert received == [2.0, 2.0]
+    assert received == [2.0 / observed.fs, 2.0 / observed.fs]
 
 
-@pytest.mark.parametrize("canonical_domain", ["time", "wdm"])
+@pytest.mark.parametrize("arrival_domain", ["time", "wdm"])
 def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
-    observed, canonical_domain
+    observed, arrival_domain
 ):
-    canonical = (
+    arrival = (
         observed
-        if canonical_domain == "time"
+        if arrival_domain == "time"
         else transform(observed, "wdm", num_frequency_divisions=8)
     )
     fail = [True]
 
     class MutateInputs:
+        role = "signal"
         name = "mutate"
 
         def state_from_parameters(self, parameters, reference_data):
@@ -133,8 +136,8 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
                 parameters={"amplitude": amplitude, "coordinates": np.array([3.0])}
             )
 
-    actual = Wheel(canonical, random_seed=7)
-    control = Wheel(canonical, random_seed=7)
+    actual = Wheel(arrival, num_frequency_divisions=8, random_seed=7)
+    control = Wheel(arrival, num_frequency_divisions=8, random_seed=7)
     for wheel in (actual, control):
         wheel.add(
             starting_at(
@@ -143,7 +146,6 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
                     parameters={"amplitude": 0.0, "coordinates": np.array([3.0])}
                 ),
             ),
-            role="signal",
             data_domain="frequency",
         )
     previous_amplitude = actual.ledger["mutate"].parameters["amplitude"]
@@ -153,12 +155,15 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     np.testing.assert_array_equal(
         actual.ledger["mutate"].parameters["coordinates"], [3.0]
     )
-    for name in canonical.channel_names:
+    for name in arrival.channel_names:
         np.testing.assert_array_equal(
-            actual.observed_data.channel_data[name], canonical.channel_data[name]
+            actual.observed_data.channel_data[name], arrival.channel_data[name]
         )
-        np.testing.assert_array_equal(
-            actual.residual().channel_data[name], canonical.channel_data[name]
+        np.testing.assert_allclose(
+            actual.residual().channel_data[name],
+            arrival.channel_data[name],
+            rtol=1e-12,
+            atol=1e-12,
         )
     fail[0] = False
     actual.run(1)

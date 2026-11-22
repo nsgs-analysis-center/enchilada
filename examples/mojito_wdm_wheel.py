@@ -80,8 +80,9 @@ def main(
     for name in observed.channel_names:
         rms = float(np.sqrt(np.mean(observed.channel_data[name] ** 2)))
         print(f"  {name}: rms {rms:.3e} per WDM coefficient")
+    # WDM observations: their grid is the campaign's home grid, no count needed.
     wheel = Wheel(observed, random_seed=0)
-    wheel.add(EchoBlock(name="echo"), role="signal")
+    wheel.add(EchoBlock(name="echo"))
     # EchoBlock adds no signal, so its "[echo] ... residual RMS" line repeats the A
     # rms above: the block was served the WDM coefficients.
     wheel.run(num_cycles=1)

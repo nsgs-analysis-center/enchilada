@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import make_observed, white_covariance
-from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel, transform
 from enchilada.testing import EchoBlock, check_block
 
 
@@ -33,6 +33,8 @@ class RecordingEcho(EchoBlock):
 
 class FlatNoiseBlock:
     """A noise block publishing white noise of `level` from both methods."""
+
+    role = "noise"
 
     def __init__(self, name, level, seen=None):
         self.name = name
@@ -64,17 +66,24 @@ class TestCheckBlock:
             block_under_test=EchoBlock(name="echo"),
             observed_data=observed,
             num_cycles=2,
-            role="signal",
+            num_frequency_divisions=8,
             noise_blocks=(FixedNoiseBlock("noise", white_covariance(observed, 1.0)),),
             random_seed=0,
         )
 
     def test_conforming_signal_block_passes_without_noise(self, observed):
-        check_block(EchoBlock(name="echo"), observed, role="signal")
+        check_block(EchoBlock(name="echo"), observed, num_frequency_divisions=8)
 
-    def test_role_is_required(self, observed):
+    def test_a_signal_block_among_the_noise_blocks_is_refused(self, observed):
+        with pytest.raises(ValueError, match="noise_blocks entry 'echo' declares role"):
+            check_block(
+                EchoBlock(name="under_test"),
+                observed,
+                noise_blocks=(EchoBlock(name="echo"),),
+                num_frequency_divisions=8,
+            )
         with pytest.raises(TypeError, match="role"):
-            check_block(EchoBlock(name="echo"), observed)
+            check_block(EchoBlock(name="echo"), observed, **{"role": "signal"})
 
     def test_conforming_in_frequency_domain(self, rng):
         n = 64
@@ -85,7 +94,7 @@ class TestCheckBlock:
                 ch: rng.standard_normal(n // 2 + 1) + 0j for ch in ("A", "E", "T")
             },
         )
-        check_block(EchoBlock(name="echo"), obs, role="signal")
+        check_block(EchoBlock(name="echo"), obs, num_frequency_divisions=8)
 
     def test_non_block_state_return_caught(self, observed):
         class Bad(EchoBlock):
@@ -100,7 +109,7 @@ class TestCheckBlock:
                 return {"A": np.zeros(1)}  # not a BlockState
 
         with pytest.raises(TypeError, match="must return a BlockState"):
-            check_block(Bad(name="bad"), observed, role="signal")
+            check_block(Bad(name="bad"), observed, num_frequency_divisions=8)
 
     def test_off_grid_block_state_caught(self, observed):
         class Drifter(EchoBlock):
@@ -119,10 +128,14 @@ class TestCheckBlock:
                 )
 
         with pytest.raises(ValueError, match="length 3, expected"):
-            check_block(Drifter(name="drift"), observed, role="signal")
+            check_block(Drifter(name="drift"), observed, num_frequency_divisions=8)
 
     def test_conforming_noise_block_passes(self, observed):
-        check_block(FlatNoiseBlock("noise", 1.0), observed.to_frequency(), role="noise")
+        check_block(
+            FlatNoiseBlock("noise", 1.0),
+            observed.to_frequency(),
+            num_frequency_divisions=8,
+        )
 
     def test_noise_model_violating_contract_caught(self, observed):
         class BadNoise(EchoBlock):
@@ -130,13 +143,17 @@ class TestCheckBlock:
                 return conditional_residual.block_state().with_covariance(object())
 
         with pytest.raises(TypeError, match="Covariance"):
-            check_block(BadNoise(name="bad"), observed, role="noise")
+            check_block(BadNoise(name="bad"), observed, num_frequency_divisions=8)
 
     def test_role_violations_are_caught(self, observed):
-        with pytest.raises(ValueError, match="registered as a signal block"):
-            check_block(FlatNoiseBlock("noise", 1.0), observed, role="signal")
-        with pytest.raises(ValueError, match="registered as a noise block"):
-            check_block(EchoBlock(name="echo"), observed, role="noise")
+        turncoat = FlatNoiseBlock("noise", 1.0)
+        turncoat.role = "signal"
+        with pytest.raises(ValueError, match="declares role 'signal'"):
+            check_block(turncoat, observed, num_frequency_divisions=8)
+        echo = EchoBlock(name="echo")
+        echo.role = "noise"
+        with pytest.raises(ValueError, match="declares role 'noise'"):
+            check_block(echo, observed, num_frequency_divisions=8)
 
     def test_noise_blocks_register_first_and_the_signal_block_receives_their_sum(
         self, observed
@@ -146,7 +163,7 @@ class TestCheckBlock:
             RecordingEcho("echo", seen),
             observed,
             num_cycles=2,
-            role="signal",
+            num_frequency_divisions=8,
             noise_blocks=(
                 FixedNoiseBlock("floor", white_covariance(observed, 1.0)),
                 FlatNoiseBlock("excess", 2.0),
@@ -154,7 +171,7 @@ class TestCheckBlock:
         )
         assert len(seen) == 3  # initial_sample and two samples
         for received in seen:
-            np.testing.assert_array_equal(received, 3.0)
+            np.testing.assert_allclose(received, 3.0)
 
     def test_a_noise_block_under_test_receives_the_other_noise_blocks(self, observed):
         seen = []
@@ -162,16 +179,17 @@ class TestCheckBlock:
             FlatNoiseBlock("excess", 2.0, seen),
             observed,
             num_cycles=2,
-            role="noise",
+            num_frequency_divisions=8,
             noise_blocks=(FixedNoiseBlock("floor", white_covariance(observed, 1.0)),),
         )
         assert len(seen) == 3
         for received in seen:
-            np.testing.assert_array_equal(received, 1.0)  # the floor, not itself
+            np.testing.assert_allclose(received, 1.0)  # the floor, not itself
 
     def test_block_without_initial_sample_is_refused(self, observed):
         class SampleOnly:
             name = "sample_only"
+            role = "signal"
 
             def sample(
                 self,
@@ -184,7 +202,7 @@ class TestCheckBlock:
                 return current_block_state
 
         with pytest.raises(TypeError, match="does not implement initial_sample"):
-            check_block(SampleOnly(), observed, role="signal")
+            check_block(SampleOnly(), observed, num_frequency_divisions=8)
 
     def test_failing_initial_sample_is_caught(self, observed):
         class BadStart(EchoBlock):
@@ -192,7 +210,7 @@ class TestCheckBlock:
                 return {"A": np.zeros(1)}  # not a BlockState
 
         with pytest.raises(TypeError, match="initial_sample must return a BlockState"):
-            check_block(BadStart(name="bad"), observed, role="signal")
+            check_block(BadStart(name="bad"), observed, num_frequency_divisions=8)
 
 
 class TestFixedNoiseBlock:
@@ -200,39 +218,40 @@ class TestFixedNoiseBlock:
         check_block(
             FixedNoiseBlock("floor", white_covariance(observed, 1.0)),
             observed,
-            role="noise",
+            num_frequency_divisions=8,
         )
 
     def test_gives_a_campaign_a_known_covariance(self, observed):
         covariance = white_covariance(observed, 7.0)
-        wheel = Wheel(observed)
-        wheel.add(FixedNoiseBlock("floor", covariance), role="noise")
-        np.testing.assert_array_equal(wheel.covariance.A, 7.0)
-        wheel.add(EchoBlock("echo"), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(FixedNoiseBlock("floor", covariance))
+        np.testing.assert_allclose(wheel.covariance.A, 7.0 / observed.fs)
+        wheel.add(EchoBlock("echo"))
         wheel.run(2)
-        np.testing.assert_array_equal(wheel.covariance.A, 7.0)
+        np.testing.assert_allclose(wheel.covariance.A, 7.0 / observed.fs)
         np.testing.assert_array_equal(wheel.ledger["floor"].covariance.A, 7.0)
         assert wheel.ledger["floor"].template is None
 
     def test_must_be_registered_on_its_covariance_grid(self, observed):
-        wheel = Wheel(observed)
+        wheel = Wheel(observed, num_frequency_divisions=8)
         spectral = white_covariance(observed.to_frequency(), 1.0)
         with pytest.raises(
             ValueError, match="floor.initial_sample covariance is on grid"
         ):
-            wheel.add(FixedNoiseBlock("floor", spectral), role="noise")
+            wheel.add(FixedNoiseBlock("floor", spectral))
         assert len(wheel.ledger) == 0
-        wheel.add(
-            FixedNoiseBlock("floor", spectral), role="noise", data_domain="frequency"
+        wheel.add(FixedNoiseBlock("floor", spectral), data_domain="frequency")
+        assert wheel.covariance.grid == wheel.home_grid
+        np.testing.assert_allclose(
+            transform(wheel.covariance, "frequency").A, spectral.A, rtol=1e-12
         )
-        assert wheel.covariance.grid == observed.to_frequency().grid
 
 
 class TestEchoBlock:
     def test_keeps_sampling_counter_in_local_state(self, observed):
         echo = EchoBlock(name="echo")
-        wheel = Wheel(observed)
-        wheel.add(echo, role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(echo)
         wheel.run(3)
         assert echo.state.num_sample_calls == 3
         published = wheel.ledger["echo"]
@@ -242,12 +261,15 @@ class TestEchoBlock:
         assert echo.state.metadata == {}
 
     def test_contributes_a_zero_signal(self, observed):
-        wheel = Wheel(observed)
-        wheel.add(EchoBlock(name="echo"), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(EchoBlock(name="echo"))
         wheel.run(1)
         for ch in observed.channel_names:
-            np.testing.assert_array_equal(
-                wheel.residual().channel_data[ch], observed.channel_data[ch]
+            np.testing.assert_allclose(
+                wheel.residual().channel_data[ch],
+                observed.channel_data[ch],
+                rtol=1e-12,
+                atol=1e-12,
             )
 
 
@@ -302,6 +324,7 @@ class _Amplitude(_Publishing):
     """Publishes a constant template of `amplitude` per channel."""
 
     name = "amplitude"
+    role = "signal"
     amplitude = 1.0
 
     def _state(self, data, amplitude=None):
@@ -329,7 +352,7 @@ class TestRoundTrip:
                 return super().state_from_parameters(parameters, reference_data)
 
         block = Counting("noise", 1.0)
-        check_block(block, observed, num_cycles=num_cycles, role="noise")
+        check_block(block, observed, num_cycles=num_cycles, num_frequency_divisions=8)
         # step 0, one per cycle, and step 0 again after the run (not with 0 cycles)
         assert block.calls == calls
 
@@ -348,7 +371,7 @@ class TestRoundTrip:
                 "template"
             ),
         ):
-            check_block(Doubling(), observed, role="signal")
+            check_block(Doubling(), observed, num_frequency_divisions=8)
 
     def test_a_covariance_the_parameters_do_not_determine_is_caught_at_its_step(
         self, observed
@@ -365,7 +388,7 @@ class TestRoundTrip:
                 )
 
         with pytest.raises(ValueError, match="published covariance at step 1"):
-            check_block(Drifting("noise", 1.0), observed, role="noise")
+            check_block(Drifting("noise", 1.0), observed, num_frequency_divisions=8)
 
     def test_the_rebuilt_state_must_be_a_block_state(self, observed):
         class Wrong(EchoBlock):
@@ -375,7 +398,7 @@ class TestRoundTrip:
         with pytest.raises(
             TypeError, match="state_from_parameters must return a BlockState"
         ):
-            check_block(Wrong("wrong"), observed, role="signal")
+            check_block(Wrong("wrong"), observed, num_frequency_divisions=8)
 
     @pytest.mark.parametrize(("error", "passes"), [(1e-12, True), (1e-7, False)])
     def test_round_off_is_tolerated_but_a_real_difference_is_not(
@@ -383,6 +406,7 @@ class TestRoundTrip:
     ):
         class Scaled(_Publishing):
             name = "thirds"
+            role = "signal"
 
             def _state(self, data, amplitude=0.3):
                 basis = np.linspace(-1.0, 1.0, data.num_time_samples)
@@ -397,16 +421,17 @@ class TestRoundTrip:
                 )
 
         if passes:
-            check_block(Scaled(), observed, role="signal")
+            check_block(Scaled(), observed, num_frequency_divisions=8)
         else:
             with pytest.raises(
                 ValueError, match="published template in channel 'A' at step 0"
             ):
-                check_block(Scaled(), observed, role="signal")
+                check_block(Scaled(), observed, num_frequency_divisions=8)
 
     def test_an_all_zero_channel_tolerates_nothing(self, observed):
         class Silent(_Publishing):
             name = "silent"
+            role = "signal"
 
             def _state(self, data):
                 return data.block_state(
@@ -424,7 +449,7 @@ class TestRoundTrip:
         with pytest.raises(
             ValueError, match="published template in channel 'A' at step 0"
         ):
-            check_block(Silent(), observed, role="signal")
+            check_block(Silent(), observed, num_frequency_divisions=8)
 
     @pytest.mark.parametrize(
         ("rebuilt", "passes"), [(1e-12 * (1 + 1e-12), True), (2e-12, False)]
@@ -436,6 +461,7 @@ class TestRoundTrip:
 
         class QuietT(_Publishing):
             name = "quiet_t"
+            role = "noise"
 
             def _state(self, data, quiet=1e-12):
                 return data.block_state().with_covariance(
@@ -449,10 +475,10 @@ class TestRoundTrip:
                 return self._state(reference_data, rebuilt)
 
         if passes:
-            check_block(QuietT(), observed, role="noise")
+            check_block(QuietT(), observed, num_frequency_divisions=8)
         else:
             with pytest.raises(ValueError, match="published covariance at step 0"):
-                check_block(QuietT(), observed, role="noise")
+                check_block(QuietT(), observed, num_frequency_divisions=8)
 
     def test_a_rebuild_that_reads_the_block_state_is_caught(self, observed):
         class Remembering(_Amplitude):
@@ -468,7 +494,9 @@ class TestRoundTrip:
                 return self._state(reference_data)  # reads self, not parameters
 
         with pytest.raises(ValueError, match="rebuilt again after 2 cycles"):
-            check_block(Remembering(), observed, num_cycles=2, role="signal")
+            check_block(
+                Remembering(), observed, num_cycles=2, num_frequency_divisions=8
+            )
 
     def test_a_rebuild_that_reads_channel_values_is_caught(self, observed):
         # a zero observation would equal the zeroed reference
@@ -476,6 +504,7 @@ class TestRoundTrip:
 
         class Copying(_Publishing):
             name = "copy"
+            role = "signal"
 
             def _state(self, data):
                 return data.block_state(
@@ -488,7 +517,7 @@ class TestRoundTrip:
         with pytest.raises(
             ValueError, match="published template in channel 'A' at step 0"
         ):
-            check_block(Copying(), observed, role="signal")
+            check_block(Copying(), observed, num_frequency_divisions=8)
 
     def test_a_rebuild_with_the_wrong_channels_says_which(self, observed):
         class NoTemplate(_Amplitude):
@@ -499,7 +528,7 @@ class TestRoundTrip:
             ValueError,
             match=re.escape("rebuilt channels [], published ['A', 'E', 'T']"),
         ):
-            check_block(NoTemplate(), observed, role="signal")
+            check_block(NoTemplate(), observed, num_frequency_divisions=8)
 
     def test_a_rebuild_without_the_covariance_says_so(self, observed):
         class NoCovariance(FlatNoiseBlock):
@@ -507,7 +536,7 @@ class TestRoundTrip:
                 return BlockState()
 
         with pytest.raises(ValueError, match="the rebuild has none"):
-            check_block(NoCovariance("noise", 1.0), observed, role="noise")
+            check_block(NoCovariance("noise", 1.0), observed, num_frequency_divisions=8)
 
     def test_a_rebuilt_template_off_the_grid_is_caught(self, observed):
         class Complex(_Amplitude):
@@ -520,7 +549,7 @@ class TestRoundTrip:
                 )
 
         with pytest.raises(TypeError, match="complex"):
-            check_block(Complex(), observed, role="signal")
+            check_block(Complex(), observed, num_frequency_divisions=8)
 
     def test_the_rebuild_receives_file_typed_parameters(self, observed):
         class Typed(_Amplitude):
@@ -541,7 +570,7 @@ class TestRoundTrip:
                     reference_data, parameters["amplitude"], parameters["weights"]
                 )
 
-        check_block(Typed(), observed, role="signal")
+        check_block(Typed(), observed, num_frequency_divisions=8)
 
     def test_a_rebuild_that_mutates_its_parameters_is_harmless(self, observed):
         class Popping(_Amplitude):
@@ -549,7 +578,7 @@ class TestRoundTrip:
                 amplitude = parameters.pop("amplitude")
                 return self._state(reference_data, amplitude)
 
-        check_block(Popping(), observed, num_cycles=2, role="signal")
+        check_block(Popping(), observed, num_cycles=2, num_frequency_divisions=8)
 
 
 class TestRoundTripCovarianceBranches:
@@ -563,7 +592,7 @@ class TestRoundTripCovarianceBranches:
         with pytest.raises(
             ValueError, match="the rebuild has one but the published state has none"
         ):
-            check_block(Extra(), observed, role="signal")
+            check_block(Extra(), observed, num_frequency_divisions=8)
 
     def test_a_rebuilt_covariance_with_other_channels(self, observed, rng):
         two = make_observed(rng, channel_names=("A", "E"))
@@ -573,7 +602,7 @@ class TestRoundTripCovarianceBranches:
                 return BlockState().with_covariance(white_covariance(two, self.level))
 
         with pytest.raises(ValueError, match=r"channels \('A', 'E'\) differ"):
-            check_block(TwoChannels("noise", 1.0), observed, role="noise")
+            check_block(TwoChannels("noise", 1.0), observed, num_frequency_divisions=8)
 
     def test_a_rebuilt_covariance_on_another_grid(self, observed):
         spectral = observed.to_frequency()
@@ -585,7 +614,7 @@ class TestRoundTripCovarianceBranches:
                 )
 
         with pytest.raises(ValueError, match="grid .* differs from the published"):
-            check_block(OtherGrid("noise", 1.0), observed, role="noise")
+            check_block(OtherGrid("noise", 1.0), observed, num_frequency_divisions=8)
 
     def test_a_rebuild_cannot_write_into_its_reference(self, observed):
         class Writer(_Amplitude):
@@ -594,4 +623,4 @@ class TestRoundTripCovarianceBranches:
                 return self._state(reference_data, parameters["amplitude"])
 
         with pytest.raises(ValueError, match="read-only"):
-            check_block(Writer(), observed, role="signal")
+            check_block(Writer(), observed, num_frequency_divisions=8)

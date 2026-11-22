@@ -21,6 +21,8 @@ from enchilada import BlockState, L1Data, Wheel, transform
 class DomainEcho:
     """A fixed zero-signal model recording the representation it receives."""
 
+    role = "signal"  # keep unannotated: `role: str` would become a dataclass field
+
     name: str
     expected_domain: str
 
@@ -83,14 +85,15 @@ def run_example():
     )
     restored_signal = transform(wdm_signal, "time", reference_data=wdm_data)
 
-    # Wheel keeps time as the canonical grid while preparing each block's inputs.
-    wheel = Wheel(observed, random_seed=3)
+    # The campaign lives on a WDM home grid (8 rows x 16 columns for 128 samples)
+    # and serves each block on the grid it asks for.
+    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
     blocks = {}
     for domain in ("time", "frequency", "wdm"):
         block = DomainEcho(domain, domain)
         blocks[domain] = block
         options = {"num_frequency_divisions": 8} if domain == "wdm" else {}
-        wheel.add(block, role="signal", data_domain=domain, **options)
+        wheel.add(block, data_domain=domain, **options)
     wheel.run(num_cycles=2)
 
     return {
@@ -109,7 +112,7 @@ def run_example():
         ),
         "result_parameters": restored_signal.parameters,
         "block_domains": [block.state.input_domain for block in blocks.values()],
-        "canonical_domain": wheel.working_residual.data_domain,
+        "arrival_domain": wheel.working_residual.data_domain,
         "residual_max_error": maximum_error(
             observed.channel_data, wheel.working_residual.channel_data
         ),

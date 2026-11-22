@@ -152,21 +152,23 @@ def test_gb_context_requires_independent_channels_and_returns_psd_units(gb_model
 
 
 @pytest.mark.parametrize("storage_domain", ["time", "wdm"])
-def test_gb_frequency_registration_reads_its_native_frequency_covariance(
+def test_gb_frequency_registration_reads_the_home_grid_noise_on_its_frequency_grid(
     gb_model, spectral_context, storage_domain
 ):
     data, noise = spectral_context
     options = {"num_frequency_divisions": 8} if storage_domain == "wdm" else {}
     observed = transform(data, storage_domain, **options)
-    wheel = Wheel(observed, random_seed=0)
+    # An 8 x 8 home grid: the WDM observations' own grid, or the time data's.
+    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=0)
     # Noise registers first: GBBlock.initial_sample needs the covariance.
-    wheel.add(FixedNoiseBlock("noise", noise), role="noise", data_domain="frequency")
+    wheel.add(FixedNoiseBlock("noise", noise), data_domain="frequency")
     block = make_block(gb_model)
     seen_psds = []
 
     class ContextProbe:
         """Check the GB likelihood inputs without requiring optional Eryn."""
 
+        role = "signal"
         name = block.name
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
@@ -180,15 +182,21 @@ def test_gb_frequency_registration_reads_its_native_frequency_covariance(
             seen_psds.append(block._context(conditional_residual, covariance)[1]["A"])
             return current_block_state
 
-    wheel.add(ContextProbe(), role="signal", data_domain="frequency")
+    wheel.add(ContextProbe(), data_domain="frequency")
     wheel.run(1)
     assert len(seen_psds) == 2
     for psd in seen_psds:
+        assert psd.dtype == np.float64  # a real PSD, never complex
+        # Exact because the fixture PSD is flat; a coloured PSD arrives
+        # band-averaged at the home grid's row resolution.
         np.testing.assert_allclose(psd, 2.0 * noise.pair("A", "A") / data.Tobs)
-    assert wheel.covariance.grid == data.grid
+    # The publication is kept natively; the sum is its home-grid translation.
+    assert wheel.ledger["noise"].covariance.grid == data.grid
+    assert wheel.covariance.grid == wheel.home_grid
     result = wheel.ledger["gb"]
-    assert result.template["A"].shape == observed.channel_data["A"].shape
-    frequency_result = transform(result, "frequency", reference_data=observed)
+    assert result.template["A"].shape == wheel.home_grid.channel_shape
+    home = transform(observed, "wdm", num_frequency_divisions=8)
+    frequency_result = transform(result, "frequency", reference_data=home)
     assert np.linalg.norm(frequency_result.template["A"]) > 0
     np.testing.assert_allclose(
         transform(wheel.residual(), "frequency").channel_data["A"],

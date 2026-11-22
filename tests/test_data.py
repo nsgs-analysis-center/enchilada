@@ -42,8 +42,8 @@ class TestConstructorSettings:
             channel_data={"A": data.channel_data["A"], "E": data.channel_data["E"]},
         )
         covariance = white_covariance(data, {"A": 1.0, "E": 4.0})
-        wheel = Wheel(reordered)
-        wheel.add(FixedNoiseBlock("noise", covariance), role="noise")
+        wheel = Wheel(reordered, num_frequency_divisions=2)
+        wheel.add(FixedNoiseBlock("noise", covariance))
         assert wheel.observed_data.channel_names == ("E", "A")
         assert reordered.to_frequency().to_time().channel_names == ("E", "A")
 

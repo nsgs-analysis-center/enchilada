@@ -44,29 +44,31 @@ assert_type(transform(r, "frequency"), L1Data)
 assert_type(transform(r, "wdm", num_frequency_divisions=2).wdm_grid, WDMGrid | None)
 noise = Covariance.like(r, {"A": np.ones(8)})
 assert_type(noise.copy(), Covariance)
+assert_type(transform(noise, "wdm", num_frequency_divisions=2), Covariance)
 assert_type(transform(BlockState(), "time"), BlockState)
-recorded = Wheel(r, output_path="campaign.h5")
+recorded = Wheel(r, num_frequency_divisions=2, output_path="campaign.h5")
 live = recorded.l2
 assert live is not None
 assert_type(live.num_steps, int)
 assert_type(live.block_names, tuple[str, ...])
+assert_type(live.home_grid, Grid)
 with L2Data.open("campaign.h5", observed_data=r) as reader:
     assert_type(reader.parameters("noise"), dict[str, Any])
     assert_type(reader.chain("noise", "x"), np.ndarray)
 recorded.close()
-wheel = Wheel(r)
-wheel.add(FixedNoiseBlock("noise", noise), role="noise")
-wheel.add(EchoBlock("wdm"), role="signal", data_domain="wdm", num_time_divisions=2)
-wheel.add(EchoBlock("plain"), role="signal")
-wheel.add(EchoBlock("typo"), role="nosie")   # not a Role: static error
-check_block(EchoBlock("checked"), r, role="signal")
-check_block(EchoBlock("floored"), r, role="signal",
+wheel = Wheel(r, num_frequency_divisions=2)
+wheel.add(FixedNoiseBlock("noise", noise))
+wheel.add(EchoBlock("wdm"), data_domain="wdm", num_time_divisions=2)
+wheel.add(EchoBlock("plain"))
+check_block(EchoBlock("checked"), r, num_frequency_divisions=2)
+check_block(EchoBlock("floored"), r, num_frequency_divisions=2,
             noise_blocks=(FixedNoiseBlock("floor", noise),))
-check_block(FixedNoiseBlock("probe", noise), r, role="noise")
+check_block(FixedNoiseBlock("probe", noise), r, num_frequency_divisions=2)
 from enchilada import NoiseOverwrittenWarning   # removed: static error
 
 class SampleOnly:
     name = "sample_only"
+    role = "signal"
 
     def sample(
         self, conditional_residual: L1Data,
@@ -77,8 +79,32 @@ class SampleOnly:
 
 sample_only: Block = SampleOnly()   # no initial_sample: not a Block
 
+class RoleLess:
+    name = "roleless"
+
+    def initial_sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        return BlockState()
+
+    def sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None,
+        current_block_state: BlockState, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return current_block_state
+
+roleless: Block = RoleLess()   # no role: not a Block
+
 class NoRebuild:
     name = "no_rebuild"
+    role = "signal"
 
     def initial_sample(
         self, conditional_residual: L1Data,
@@ -98,6 +124,7 @@ no_rebuild: Block = NoRebuild()   # no state_from_parameters: not a Block
 @dataclass(frozen=True)
 class FrozenBlock:
     name: str = "frozen"
+    role = "signal"
 
     def initial_sample(
         self, conditional_residual: L1Data,
@@ -118,12 +145,13 @@ class FrozenBlock:
         return current_block_state
 
 frozen: Block = FrozenBlock()
-wheel.add(FrozenBlock(), role="signal")
-check_block(FrozenBlock(), r, role="signal")
+wheel.add(FrozenBlock())
+check_block(FrozenBlock(), r, num_frequency_divisions=2)
 
 @dataclass(frozen=True)
 class ExplicitBlock(Block):
     name: str
+    role = "signal"
 
     def initial_sample(
         self, conditional_residual: L1Data,
@@ -144,7 +172,7 @@ class ExplicitBlock(Block):
         return current_block_state
 
 explicit: Block = ExplicitBlock("explicit")
-wheel.add(explicit, role="signal")
+wheel.add(explicit)
 """
 
 
@@ -172,12 +200,16 @@ def test_consumer_typos_are_static_errors(tmp_path):
         'Incompatible types in assignment (expression has type "SampleOnly", '
         'variable has type "Block")'
     ) in out, out
+    # ... and neither is a class without a role ...
+    assert (
+        'Incompatible types in assignment (expression has type "RoleLess", '
+        'variable has type "Block")'
+    ) in out, out
+    # ... or one without state_from_parameters ...
     assert (
         'Incompatible types in assignment (expression has type "NoRebuild", '
         'variable has type "Block")'
     ) in out, out
-    # ... a misspelt role is a static error ...
-    assert 'Argument "role" to "add" of "Wheel" has incompatible type' in out, out
     # ... and the removed warning class is not importable
     assert 'has no attribute "NoiseOverwrittenWarning"' in out, out
     assert out.count("error:") == 6, out
@@ -244,7 +276,7 @@ def test_runtime_attribute_hints_still_work():
 
 
 def test_block_protocol_is_runtime_checkable():
-    from enchilada import Block
+    from enchilada import Block, BlockState
     from enchilada.testing import EchoBlock
 
     assert isinstance(EchoBlock("e"), Block)
@@ -262,9 +294,24 @@ def test_block_protocol_is_runtime_checkable():
 
     assert not isinstance(SampleOnly(), Block)
 
+    class RoleLess:
+        name = "r"
+
+        def initial_sample(self, conditional_residual, covariance, *, rng):
+            return BlockState()
+
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState()
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            return current_block_state
+
+    assert not isinstance(RoleLess(), Block)
+
     # a class without state_from_parameters is not a Block either
     class NoRebuild:
         name = "n"
+        role = "signal"
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return None
@@ -285,6 +332,7 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
     @dataclass(frozen=True)
     class ExplicitBlock(Block):
         name: str
+        role = "signal"
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return BlockState(parameters={"value": 1})
@@ -304,8 +352,8 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
         tdi_generation="2.0",
         physical_observable="strain",
     )
-    wheel = Wheel(observations)
-    wheel.add(block, role="signal")
+    wheel = Wheel(observations, num_frequency_divisions=2)
+    wheel.add(block)
     wheel.run(1)
     assert wheel.ledger["explicit"].parameters == {"value": 1}
 

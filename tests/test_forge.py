@@ -26,6 +26,7 @@ FACTOR = 8  # 0.5 Hz: a slipped power of dt or fs cannot hide behind unit rates
 DURATION_S = 600.0  # 2400 native samples -> 300 decimated samples at 0.5 Hz
 WINDOW_SAMPLES = 300
 NF, NT = 8, 16  # 1024 native samples, longer than the 627-tap filter for factor 8
+HOME_ROWS = 10  # FORGE_ROWS for the tests: 300 samples = 10 rows x 30 columns
 
 
 def load_forge(name):
@@ -55,6 +56,7 @@ def simulated_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ENCHILADA_MOJITO_L1", str(path))
     monkeypatch.setenv("FORGE_DURATION_S", str(DURATION_S))
     monkeypatch.setenv("FORGE_FACTOR", str(FACTOR))
+    monkeypatch.setenv("FORGE_ROWS", str(HOME_ROWS))
     return path
 
 
@@ -284,6 +286,23 @@ def test_white_psd_matches_the_white_covariance_convention(
         )
 
 
+def test_a_translated_frequency_covariance_is_the_home_grid_covariance(
+    simulated_file, forge_data
+):
+    """The coloured PSD's frequency covariance, translated onto the home grid,
+    is what analytic_covariance builds on the home-grid data directly."""
+    spectrum = load_grid(forge_data, simulated_file, "frequency")
+    cells = transform(spectrum, "wdm", num_frequency_divisions=HOME_ROWS)
+    translated = transform(
+        forge_data.analytic_covariance(spectrum, coloured_psd),
+        "wdm",
+        num_frequency_divisions=HOME_ROWS,
+    )
+    direct = forge_data.analytic_covariance(cells, coloured_psd)
+    assert translated.grid == direct.grid == cells.grid
+    np.testing.assert_allclose(translated.blocks, direct.blocks, rtol=1e-12)
+
+
 @pytest.mark.parametrize("domain", ["time", "frequency", "wdm"])
 def test_a_constant_psd_broadcasts_like_white_psd(simulated_file, forge_data, domain):
     window = load_grid(forge_data, simulated_file, domain)
@@ -378,6 +397,7 @@ def test_forge_block_is_a_block_with_validated_settings(forge_block):
     block = forge_block.ForgeBlock()
     assert isinstance(block, Block)
     assert block.name == "forge"
+    assert block.role == "signal"
     assert (block.frequency_hz, block.prior_std, block.start_amplitude) == (
         1e-3,
         1e-17,
@@ -506,9 +526,9 @@ def test_forge_block_passes_check_block_on_the_simulated_window(
         block,
         spectrum,
         num_cycles=3,
-        role="signal",
         noise_blocks=(FixedNoiseBlock("noise", noise),),
         random_seed=1,
+        num_frequency_divisions=HOME_ROWS,
     )
     assert block.state.num_sample_calls == 3
     assert np.isfinite(block.state.last_posterior_std)
@@ -575,9 +595,9 @@ def test_forge_block_recovers_an_injected_amplitude(
         },
     )
     noise = forge_data.analytic_covariance(observed, forge_data.white_psd(level))
-    wheel = Wheel(observed, random_seed=3)
-    wheel.add(FixedNoiseBlock("noise", noise), role="noise")
-    wheel.add(block, role="signal", data_domain="frequency")
+    wheel = Wheel(observed, num_frequency_divisions=HOME_ROWS, random_seed=3)
+    wheel.add(FixedNoiseBlock("noise", noise))
+    wheel.add(block, data_domain="frequency")
     chain = []
     wheel.run(
         300,

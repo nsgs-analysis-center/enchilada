@@ -32,24 +32,47 @@ All notable changes to enchilada are documented here. The format follows
   block's grid, the covariance its role receives and the campaign RNG, and
   adopts the result through the same validation as a `sample` return; a block
   without it is refused with `TypeError`. `EchoBlock` publishes an empty start.
-- `Wheel.add(block, *, role=...)`: every block is registered as `"signal"` or
-  `"noise"`. Wheel sums the noise blocks' covariances the way it sums the
-  signal blocks' templates: a signal block receives the sum over every noise
-  block, a noise block the sum over the other noise blocks (`None` when it is
-  alone) with its own last publication on `current_block_state.covariance`,
-  and `wheel.covariance` is the whole sum. A signal block that returns a
-  covariance, or a noise block that returns a template or omits its
-  covariance, is refused with `ValueError` naming the block, the method and
-  the role; the campaign is left unchanged.
+- `Block.role`: every block declares `role = "signal"` or `role = "noise"` as
+  an attribute, read once at `Wheel.add`; a block without one is refused with
+  `TypeError`, another value with `ValueError`. Wheel sums the noise blocks'
+  covariances the way it sums the signal blocks' templates: a signal block
+  receives the sum over every noise block, a noise block the sum over the
+  other noise blocks (`None` when it is alone) with its own last publication
+  on `current_block_state.covariance`, and `wheel.covariance` is the whole
+  sum. A signal block that returns a covariance, or a noise block that
+  returns a template or omits its covariance, is refused with `ValueError`
+  naming the block, the method and the role; the campaign is left unchanged.
 - `FixedNoiseBlock(name, covariance)`: a noise block that publishes one
   configured covariance on every call; the way to give a campaign a known
   noise model.
 - `Covariance.__add__`: `noise_a + noise_b` adds two covariances on one grid
   with one channel order, validated like any construction; mismatches raise
   `ValueError`.
-- `check_block(block_under_test, observed_data, num_cycles=2, *, role,
-  noise_blocks=(), random_seed=0)`: `role` is required and `noise_blocks` are
-  registered first with `role="noise"`.
+- `check_block(block_under_test, observed_data, num_cycles=2, *,
+  noise_blocks=(), random_seed=0, num_frequency_divisions=None,
+  num_time_divisions=None)`: `noise_blocks` are registered first (each must
+  declare `role = "noise"`); the division counts set the scratch Wheel's home
+  grid.
+- `Wheel(observed_data, *, num_frequency_divisions=None,
+  num_time_divisions=None, random_seed=None)`: the campaign lives on a WDM
+  *home grid* chosen at construction (`wheel.home_grid`); time or frequency
+  observations are transformed onto it once, WDM observations bring their grid.
+  Templates, the residual and both sums live there; `add(block, *,
+  data_domain=None, ...)` serves each block on the grid it asks for by exact
+  data transforms (`None` is the observations' own grid, `"wdm"` without counts
+  the home grid), and a returned template is validated on the block's grid and
+  transformed onto the home grid. `observed_data` is the untouched arrival copy;
+  `working_residual`, `residual()` and `contribution()` come back on the
+  observations' own grid through one exact inverse transform.
+- `transform(covariance, target_domain, *, num_frequency_divisions=None,
+  num_time_divisions=None)`: translates a diagonal covariance between time,
+  frequency and WDM grids through a piecewise-constant spectral model (white
+  noise round-trips exactly; a stationary PSD is band-averaged into WDM with
+  domania's window, equal to `domania.wdm_covariance`). The result is
+  `float64` on every grid, frequency included: a complex cross term keeps its
+  real part. Wheel uses it for the noise sum: a noise block's publication is
+  kept natively in the ledger, translated onto the home grid for the sum, and
+  every block receives the sum translated onto its own grid.
 - `examples/noise_floor.py`: a known floor (`FixedNoiseBlock`) plus a sampled
   excess variance as two noise blocks, with `tests/test_noise_floor_example.py`.
 - `forge/`: a workbench for building blocks against simulated Mojito-layout
@@ -66,19 +89,21 @@ All notable changes to enchilada are documented here. The format follows
   `Wheel.add` refuses a block without it with `TypeError`; `check_block`
   rebuilds the block under test after registration and after every cycle and
   requires the result to match the published state to a relative 1e-9.
-- `Wheel(observed_data, *, random_seed=None, output_path=None)`: with a path
-  the Wheel records the campaign to an HDF5 file it creates (an existing path
-  raises `FileExistsError`): every block's parameters at registration and
-  after each complete cycle, flushed before `on_cycle_complete`, under a
-  global step counter. `wheel.l2` is the live view; `Wheel.close()` or a
-  `with Wheel(...)` block closes the file. Recorded parameters must be numeric
-  with a key set, dtype kind and dimension count fixed at registration; shapes
-  may change per step.
+- `Wheel(..., output_path=None)`: with a path the Wheel records the campaign
+  to an HDF5 file it creates (an existing path raises `FileExistsError`):
+  the observation's grid and the home grid, then every block's role, grid and
+  parameters at registration and after each complete cycle, flushed before
+  `on_cycle_complete`, under a global step counter. `wheel.l2` is the live
+  view; `Wheel.close()` or a `with Wheel(...)` block closes the file.
+  Recorded parameters must be numeric with a key set, dtype kind and
+  dimension count fixed at registration; shapes may change per step.
 - `L2Data`: the read-only view of a campaign file. `L2Data.open(path, *,
   observed_data=None)`; metadata (`num_steps`, `block_names`, `role`,
-  `first_step`, `block_grid`); recorded values (`parameters`, `chain`,
-  `entries`); rebuilt states (`states`, `covariance`, `residual(step,
-  blocks)`).
+  `first_step`, `block_grid`, `observation_grid`, `home_grid`); recorded
+  values (`parameters`, `chain`, `entries`); rebuilt states (`states`,
+  `covariance`, `residual(step, blocks)`) on the home grid, as the Wheel keeps
+  them: templates as in the ledger, the noise sum as `wheel.covariance`, and
+  the residual before the Wheel's inverse transform to the arrival grid.
 - The examples (`toy_fit.py` via `run_toy_fit(output_path=...)`,
   `noise_floor.py`, the Block authoring tutorial, `forge/wheel.ipynb`) record
   their campaigns and read chains back from the file;
@@ -87,7 +112,12 @@ All notable changes to enchilada are documented here. The format follows
 ### Changed
 
 - **Breaking:** every existing block must implement `state_from_parameters`;
-  verify it with `check_block`.
+  verify it with `check_block`. A block missing `role` or a method is refused
+  with one message naming the five members: `a Block needs name, role
+  ('signal' or 'noise'), initial_sample(conditional_residual, covariance, *,
+  rng), sample(conditional_residual, covariance, current_block_state, *, rng)
+  and state_from_parameters(parameters, reference_data).` The role is checked
+  before the methods.
 - **Breaking:** h5py is a core dependency (the Wheel writes HDF5), so Mojito
   loading and `NumericOrbit.from_hdf5` need no extra.
 - **Breaking:** the core depends on `numpy>=2.1`, `scipy>=1.14.1` and
@@ -123,27 +153,38 @@ All notable changes to enchilada are documented here. The format follows
   `initial_sample`, and the example prior helpers (`draw_sine_prior`,
   `draw_white_noise_prior`, `draw_gb_prior`) became the blocks'
   `initial_sample`. Registration now consumes campaign RNG draws when the
-  start draws from `rng`, and a block registered on another grid than the
-  current covariance is refused at `add`, before `initial_sample` is called.
-  Under `check_block`, construct the block with its start.
-- **Breaking:** `Wheel.add` and `check_block` require the `role` keyword; the
-  single covariance owner is gone. Wheel holds the noise sum on the grid of the
-  first noise publication and hands a deep copy to blocks registered on that
-  grid. A noise block on another grid is refused at `add`, before its
-  `initial_sample`, with `ValueError` ("a covariance does not add across
-  grids"); a signal block on another grid is refused at `add` or `run` as
-  before; a covariance a noise block returns on another grid than its own is
-  refused at `add` or `run`. A joint signal-and-noise model becomes two blocks,
-  one per role.
+  start draws from `rng`. Under `check_block`, construct the block with its
+  start.
+- **Breaking:** every block must declare `role` (`"signal"` or `"noise"`) as
+  a class attribute; `Wheel.add` and `check_block` read it. The single
+  covariance owner is gone: every noise block adds its covariance to the sum,
+  published on its own grid and translated onto the home grid, and the sum
+  reaches each block translated onto its grid; a covariance a noise block
+  returns on another grid than its own is refused at `add` or `run`. A joint
+  signal-and-noise model becomes two blocks, one per role.
+- **Breaking:** `Wheel` stores the campaign on a WDM home grid. Time or
+  frequency observations need `num_frequency_divisions` or
+  `num_time_divisions` at construction (`ValueError` otherwise) and the record
+  length must factor into two even counts; `wheel.covariance` is on the home
+  grid; ledger templates are on the home grid and noise publications on their
+  blocks' grids; the residual views equal the arrival-grid values to rounding,
+  not bit for bit.
 - The tutorial's `WhiteNoiseVarianceBlock` and `examples/toy_fit.py`'s
   `WhiteNoiseBlock` model the whole noise and refuse to run beside another
   noise block.
 - `benchmarks/benchmark_wheel.py` runs one `FixedNoiseBlock` beside the fixed
-  signals and reports `"noise_blocks": 1`. Every noise publication, an
-  unchanged one included, is revalidated each cycle, so its timings are not
-  comparable with runs from before the noise sum.
-- `transform` takes `L1Data` or `BlockState` only; a `BlockState` carries its
-  covariance through unchanged.
+  signals, reports `"noise_blocks": 1` and `"rows"`, and takes `--rows` for
+  the home grid (default 128). Every noise publication, an unchanged one
+  included, is revalidated each cycle, and its time-grid blocks pay three data
+  transforms per call and one covariance translation per block per cycle, so
+  its timings are not comparable with runs from before the noise sum or the
+  home grid.
+- The 0.3.0 covariance-translation seam (`NotImplementedError` from
+  `transform` of a `Covariance`, and from a Wheel handing a covariance to a
+  block on another grid) now translates through the diagonal spectral model;
+  `reference_data` is accepted and ignored for a `Covariance`, and a
+  `BlockState` carries its covariance unchanged. No `NotImplementedError`
+  remains in the package.
 - The examples and notebooks build covariances with `like` from the convention
   `C = (Tobs / 2) S(f)` under `X = dt * rfft(x)` and read them with `pair`.
 - `L1Data` now rejects a bool or non-real `sample_rate_hz` with `TypeError` at
@@ -163,10 +204,8 @@ All notable changes to enchilada are documented here. The format follows
     channel at `f = np.fft.rfftfreq(data.N, data.dt)`.
   - `noise_psd(ch, data)` → `2 * noise.pair(ch, ch) / data.Tobs`.
   - `noise_variance(ch, data)` → `noise.pair(ch, ch)` on time data.
-- The covariance overload of `transform` with its `reference_data`, the
-  covariance translation seam and every `NotImplementedError` in the package.
 - `Wheel(initial_covariance=...)` and the positional covariance argument: a
-  known noise model is a `FixedNoiseBlock` registered with `role="noise"`.
+  known noise model is a `FixedNoiseBlock` (a block with `role = "noise"`).
 - `NoiseOverwrittenWarning` and the "owner must republish" rule: noise blocks
   add, and each republishes into its own slot of the sum.
 - `L1Data.zero_block_state(covariance=...)`: a zero template plus a covariance

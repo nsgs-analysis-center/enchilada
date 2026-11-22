@@ -1,4 +1,4 @@
-"""Roles at Wheel.add: signal blocks sum templates, noise blocks sum covariances."""
+"""Declared roles: signal blocks sum templates, noise blocks sum covariances."""
 
 import re
 from dataclasses import dataclass
@@ -13,8 +13,15 @@ from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel, transform
 from enchilada.testing import EchoBlock
 
 
+def home_level(observed, variance):
+    """White time variance `variance` as it reads on the WDM home grid: dt * sigma^2."""
+    return variance / observed.fs
+
+
 class ConstSignal:
     """A signal block publishing a constant template; `state.updates` counts samples."""
+
+    role = "signal"
 
     @dataclass
     class State:
@@ -49,6 +56,8 @@ class WhiteNoise:
     `seen[name]` collects the covariance handed to each call, `initial_sample`
     first; `sample` republishes the last accepted state unchanged.
     """
+
+    role = "noise"
 
     def __init__(self, name, level, seen):
         self.name = name
@@ -91,8 +100,8 @@ class RecordingSignal(ConstSignal):
         )
 
 
-def offender(role, method, *, with_template, with_covariance):
-    """A block of `role` whose `method` returns the given fields.
+def offender(declared, method, *, with_template, with_covariance):
+    """A block declaring role `declared` whose `method` returns the given fields.
 
     The other method returns what the role allows, so the block registers and
     samples normally until `method` is called.
@@ -100,10 +109,11 @@ def offender(role, method, *, with_template, with_covariance):
 
     class Offender:
         name = "offender"
+        role = declared
 
         @staticmethod
         def _allowed(conditional_residual):
-            if role == "noise":
+            if declared == "noise":
                 return BlockState(
                     covariance=white_covariance(conditional_residual, 1.0)
                 )
@@ -146,7 +156,6 @@ def snapshot(wheel):
         "rng": wheel._rng.bit_generator.state,
         "signal_sum": wheel._signal_sum,
         "noise_sum": wheel._noise_sum,
-        "covariance_grid": wheel._covariance_grid,
         "ledger": {
             name: (
                 None if entry.template is None else entry.template["A"].copy(),
@@ -171,7 +180,6 @@ def assert_unchanged(wheel, before):
     assert after["rng"] == before["rng"]
     assert after["signal_sum"] is before["signal_sum"]
     assert after["noise_sum"] is before["noise_sum"]
-    assert after["covariance_grid"] == before["covariance_grid"]
     np.testing.assert_array_equal(after["residual"], before["residual"])
     _same_array(after["covariance"], before["covariance"])
     for name, (template, covariance, parameters) in before["ledger"].items():
@@ -182,32 +190,32 @@ def assert_unchanged(wheel, before):
 
 
 class TestRoles:
-    def test_role_is_validated_before_the_block_is_inspected(self, observed):
-        class Untouchable:
-            @property
-            def name(self):
-                raise AssertionError(
-                    "add must refuse the role before reading the block"
-                )
+    def test_the_role_is_read_from_the_block_before_the_method_checks(self, observed):
+        class RoleLess(ConstSignal):
+            role = None
 
-        wheel = Wheel(observed)
-        for role in ("Signal", "noise ", "", None, 1):
-            with pytest.raises(ValueError, match="role must be 'signal' or 'noise'"):
-                wheel.add(Untouchable(), role=role)
-        with pytest.raises(TypeError, match="role"):
-            wheel.add(ConstSignal("a", 1.0))
+        class Bare:
+            name = "bare"
+
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        with pytest.raises(TypeError, match="block 'a' declares no role"):
+            wheel.add(RoleLess("a", 1.0))
+        with pytest.raises(TypeError, match="block 'bare' declares no role"):
+            wheel.add(Bare())
+        typo = ConstSignal("b", 1.0)
+        typo.role = "Noise"
+        with pytest.raises(
+            ValueError, match=re.escape("block 'b' declares role 'Noise'; a role is")
+        ):
+            wheel.add(typo)
         assert len(wheel.ledger) == 0
         assert wheel._blocks == []
         assert wheel._roles == {}
 
-    def test_the_role_message_shows_the_offending_value(self, observed):
-        with pytest.raises(ValueError, match=re.escape("got 'Noise'")):
-            Wheel(observed).add(EchoBlock("e"), role="Noise")
-
     def test_roles_are_recorded_per_block(self, observed):
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("noise", 1.0, {}), role="noise")
-        wheel.add(ConstSignal("signal", 1.0), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("noise", 1.0, {}))
+        wheel.add(ConstSignal("signal", 1.0))
         assert wheel._roles == {"noise": "noise", "signal": "signal"}
 
     @pytest.mark.parametrize("method", ["initial_sample", "sample"])
@@ -215,12 +223,12 @@ class TestRoles:
         self._check_refusal(
             observed,
             method,
-            role="signal",
+            declared="signal",
             with_template=True,
             with_covariance=True,
             message=(
-                f"offender.{method} returned a covariance but 'offender' is "
-                "registered as a signal block"
+                f"offender.{method} returned a covariance but 'offender' "
+                "declares role 'signal'"
             ),
         )
 
@@ -229,12 +237,12 @@ class TestRoles:
         self._check_refusal(
             observed,
             method,
-            role="noise",
+            declared="noise",
             with_template=True,
             with_covariance=True,
             message=(
-                f"offender.{method} returned a template but 'offender' is "
-                "registered as a noise block"
+                f"offender.{method} returned a template but 'offender' "
+                "declares role 'noise'"
             ),
         )
 
@@ -243,32 +251,35 @@ class TestRoles:
         self._check_refusal(
             observed,
             method,
-            role="noise",
+            declared="noise",
             with_template=False,
             with_covariance=False,
             message=(
                 f"offender.{method} must return a covariance because 'offender' "
-                "is registered as a noise block"
+                "declares role 'noise'"
             ),
         )
 
     @staticmethod
     def _check_refusal(
-        observed, method, *, role, with_template, with_covariance, message
+        observed, method, *, declared, with_template, with_covariance, message
     ):
-        wheel = Wheel(observed, random_seed=3)
+        wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
         block = offender(
-            role, method, with_template=with_template, with_covariance=with_covariance
+            declared,
+            method,
+            with_template=with_template,
+            with_covariance=with_covariance,
         )
         if method == "sample":
             # First in the cycle, so nothing else commits before the refusal.
-            wheel.add(block, role=role)
-        wheel.add(WhiteNoise("noise", 1.0, {}), role="noise")
-        wheel.add(ConstSignal("signal", 1.0), role="signal")
+            wheel.add(block)
+        wheel.add(WhiteNoise("noise", 1.0, {}))
+        wheel.add(ConstSignal("signal", 1.0))
         before = snapshot(wheel)
         with pytest.raises(ValueError, match=re.escape(message)):
             if method == "initial_sample":
-                wheel.add(block, role=role)
+                wheel.add(block)
             else:
                 wheel.run(1)
         assert_unchanged(wheel, before)
@@ -276,7 +287,7 @@ class TestRoles:
             assert "offender" not in wheel._roles
             assert "offender" not in wheel._block_indices
         else:
-            assert wheel._roles["offender"] == role
+            assert wheel._roles["offender"] == declared
 
     def test_a_noise_block_cannot_smuggle_a_non_finite_covariance_past_revalidation(
         self, observed
@@ -295,17 +306,17 @@ class TestRoles:
                     covariance=published, parameters={"level": self.level}
                 )
 
-        wheel = Wheel(observed, random_seed=3)
+        wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
         # The only noise block, so no Covariance.__add__ in the sum revalidates it:
         # the refusal can only come from the copy Wheel takes at adoption.
-        wheel.add(Smuggler("smuggler", 1.0, {}), role="noise")
-        wheel.add(ConstSignal("signal", 0.5), role="signal")
+        wheel.add(Smuggler("smuggler", 1.0, {}))
+        wheel.add(ConstSignal("signal", 0.5))
         before = snapshot(wheel)
         with pytest.raises(ValueError, match=re.escape("blocks must be finite")):
             wheel.run(1)
         assert_unchanged(wheel, before)
         assert wheel._roles == {"smuggler": "noise", "signal": "signal"}
-        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 1.0))
 
 
 class TestNoiseSum:
@@ -313,58 +324,57 @@ class TestNoiseSum:
         self, observed
     ):
         seen = {}
-        wheel = Wheel(observed)
+        wheel = Wheel(observed, num_frequency_divisions=8)
         assert wheel.covariance is None
-        wheel.add(RecordingSignal("signal", 0.5, seen), role="signal")
+        wheel.add(RecordingSignal("signal", 0.5, seen))
         wheel.run(1)
         assert seen["signal"] == [None, None]
         assert wheel.covariance is None
-        assert wheel._covariance_grid is None
 
     def test_two_noise_blocks_each_receive_the_other_and_wheel_holds_the_sum(
         self, observed
     ):
         seen = {}
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("instrument", 1.0, seen), role="noise")
-        wheel.add(WhiteNoise("confusion", 2.0, seen), role="noise")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("instrument", 1.0, seen))
+        wheel.add(WhiteNoise("confusion", 2.0, seen))
         assert seen["instrument"] == [None]  # alone at registration
-        np.testing.assert_array_equal(seen["confusion"][0], 1.0)
-        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
+        np.testing.assert_allclose(seen["confusion"][0], 1.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
         wheel.run(1)
-        np.testing.assert_array_equal(seen["instrument"][1], 2.0)
-        np.testing.assert_array_equal(seen["confusion"][1], 1.0)
+        np.testing.assert_allclose(seen["instrument"][1], 2.0)
+        np.testing.assert_allclose(seen["confusion"][1], 1.0)
         np.testing.assert_array_equal(wheel.ledger["instrument"].covariance.A, 1.0)
         np.testing.assert_array_equal(wheel.ledger["confusion"].covariance.A, 2.0)
-        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
-        assert wheel._covariance_grid == observed.grid
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
+        assert wheel.covariance.grid == wheel.home_grid
 
     def test_a_signal_block_receives_the_sum_over_every_noise_block(self, observed):
         seen = {}
-        wheel = Wheel(observed)
-        wheel.add(RecordingSignal("early", 0.5, seen), role="signal")
-        wheel.add(WhiteNoise("instrument", 1.0, seen), role="noise")
-        wheel.add(WhiteNoise("confusion", 2.0, seen), role="noise")
-        wheel.add(RecordingSignal("late", 0.5, seen), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(RecordingSignal("early", 0.5, seen))
+        wheel.add(WhiteNoise("instrument", 1.0, seen))
+        wheel.add(WhiteNoise("confusion", 2.0, seen))
+        wheel.add(RecordingSignal("late", 0.5, seen))
         assert seen["early"] == [None]  # registered before any noise block
-        np.testing.assert_array_equal(seen["late"][0], 3.0)
+        np.testing.assert_allclose(seen["late"][0], 3.0)
         wheel.run(2)
         assert len(seen["early"]) == len(seen["late"]) == 3
         for name in ("early", "late"):
             for received in seen[name][1:]:
-                np.testing.assert_array_equal(received, 3.0)
+                np.testing.assert_allclose(received, 3.0)
 
     def test_three_noise_blocks_each_receive_the_sum_of_the_other_two(self, observed):
         seen = {}
-        wheel = Wheel(observed)
+        wheel = Wheel(observed, num_frequency_divisions=8)
         for name, level in (("a", 1.0), ("b", 2.0), ("c", 4.0)):
-            wheel.add(WhiteNoise(name, level, seen), role="noise")
-        np.testing.assert_array_equal(seen["c"][0], 3.0)
+            wheel.add(WhiteNoise(name, level, seen))
+        np.testing.assert_allclose(seen["c"][0], 3.0)
         wheel.run(1)
-        np.testing.assert_array_equal(seen["a"][1], 6.0)
-        np.testing.assert_array_equal(seen["b"][1], 5.0)
-        np.testing.assert_array_equal(seen["c"][1], 3.0)
-        np.testing.assert_array_equal(wheel.covariance.A, 7.0)
+        np.testing.assert_allclose(seen["a"][1], 6.0)
+        np.testing.assert_allclose(seen["b"][1], 5.0)
+        np.testing.assert_allclose(seen["c"][1], 3.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 7.0))
 
     def test_a_republished_covariance_replaces_that_block_s_slot(self, observed):
         class Growing(WhiteNoise):
@@ -374,27 +384,28 @@ class TestNoiseSum:
                 self.level += 1.0
                 return self.initial_sample(conditional_residual, covariance, rng=rng)
 
-        wheel = Wheel(observed)
-        wheel.add(Growing("growing", 1.0, {}), role="noise")
-        wheel.add(
-            FixedNoiseBlock("fixed", white_covariance(observed, 10.0)), role="noise"
-        )
-        np.testing.assert_array_equal(wheel.covariance.A, 11.0)
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(Growing("growing", 1.0, {}))
+        wheel.add(FixedNoiseBlock("fixed", white_covariance(observed, 10.0)))
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 11.0))
         wheel.run(1)
-        np.testing.assert_array_equal(wheel.covariance.A, 12.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 12.0))
         wheel.run(1)
-        np.testing.assert_array_equal(wheel.covariance.A, 13.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 13.0))
         np.testing.assert_array_equal(wheel.ledger["growing"].covariance.A, 3.0)
         np.testing.assert_array_equal(wheel.ledger["fixed"].covariance.A, 10.0)
 
     def test_noise_blocks_contribute_no_signal(self, observed):
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
-        wheel.add(WhiteNoise("b", 2.0, {}), role="noise")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("a", 1.0, {}))
+        wheel.add(WhiteNoise("b", 2.0, {}))
         wheel.run(2)
         for name in observed.channel_names:
-            np.testing.assert_array_equal(
-                wheel.residual().channel_data[name], observed.channel_data[name]
+            np.testing.assert_allclose(
+                wheel.residual().channel_data[name],
+                observed.channel_data[name],
+                rtol=1e-12,
+                atol=1e-12,
             )
             np.testing.assert_array_equal(wheel.contribution("a")[name], 0.0)
         assert wheel.ledger["a"].template is None
@@ -415,26 +426,29 @@ class TestNoiseSum:
                     conditional_residual, covariance, current_block_state, rng=rng
                 )
 
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
-        wheel.add(WhiteNoise("b", 2.0, {}), role="noise")
-        wheel.add(Mutates("signal", 0.5), role="signal")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("a", 1.0, {}))
+        wheel.add(WhiteNoise("b", 2.0, {}))
+        wheel.add(Mutates("signal", 0.5))
         wheel.run(2)
         assert len(received) == 2
         assert received[0] is not received[1]
-        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
         total = wheel.covariance
         total.blocks.setflags(write=True)
         total.A[:] = 99.0
-        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
         assert type(wheel.covariance) is Covariance
         assert not wheel.covariance.blocks.flags.writeable
 
     def test_the_sum_describes_the_observations(self, observed):
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
-        wheel.add(WhiteNoise("b", 2.0, {}), role="noise")
-        wheel.covariance.check_compatible(observed)
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("a", 1.0, {}))
+        wheel.add(WhiteNoise("b", 2.0, {}))
+        wheel.covariance.check_compatible(
+            transform(observed, "wdm", num_frequency_divisions=8)
+        )
+        transform(wheel.covariance, "time").check_compatible(observed)
 
     def test_a_noise_block_cannot_corrupt_the_others_through_its_hand_over(
         self, observed
@@ -453,16 +467,17 @@ class TestNoiseSum:
                 )
 
         seen = {}
-        wheel = Wheel(observed)
-        wheel.add(WhiteNoise("a", 2.0, seen), role="noise")
-        wheel.add(Corrupting("b", 3.0, seen), role="noise")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(WhiteNoise("a", 2.0, seen))
+        wheel.add(Corrupting("b", 3.0, seen))
         wheel.run(1)
-        np.testing.assert_array_equal(seen["b"][0], 2.0)  # a's model at registration
+        np.testing.assert_allclose(seen["b"][0], 2.0)  # a's model at registration
         np.testing.assert_array_equal(seen["b"][1], 999.0)  # its copy was overwritten
         np.testing.assert_array_equal(wheel.ledger["a"].covariance.A, 2.0)
-        np.testing.assert_array_equal(wheel.covariance.A, 5.0)
-        np.testing.assert_array_equal(
-            wheel._noise_sum.excluding(wheel._block_indices["b"]).A, 2.0
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 5.0))
+        np.testing.assert_allclose(
+            wheel._noise_sum.excluding(wheel._block_indices["b"]).A,
+            home_level(observed, 2.0),
         )
 
     def test_a_refused_noise_block_keeps_its_siblings_new_publication(self, observed):
@@ -485,139 +500,22 @@ class TestNoiseSum:
                 return const_block_state(conditional_residual, 0.5)
 
         seen = {}
-        wheel = Wheel(observed)
-        wheel.add(Rising("a", 2.0, seen), role="noise")
-        wheel.add(TurnsSignal("b", 1.0, seen), role="noise")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        wheel.add(Rising("a", 2.0, seen))
+        wheel.add(TurnsSignal("b", 1.0, seen))
         with pytest.raises(
             ValueError,
             match=re.escape(
-                "b.sample returned a template but 'b' is registered as a noise block"
+                "b.sample returned a template but 'b' declares role 'noise'"
             ),
         ):
             wheel.run(1)  # registration order: a is adopted, then b is refused
         assert len(seen["b"]) == 2
-        np.testing.assert_array_equal(seen["b"][1], 3.0)  # a's new leaf, handed to b
+        np.testing.assert_allclose(seen["b"][1], 3.0)  # a's new leaf, handed to b
         np.testing.assert_array_equal(wheel.ledger["a"].covariance.A, 3.0)
         np.testing.assert_array_equal(wheel.ledger["b"].covariance.A, 1.0)
         assert wheel.ledger["b"].template is None
-        np.testing.assert_array_equal(wheel.covariance.A, 4.0)
-
-
-class TestCovarianceGrid:
-    """The first noise publication fixes the grid of the sum."""
-
-    def test_a_noise_block_on_another_grid_is_refused_before_initial_sample(
-        self, observed
-    ):
-        class NeverStarted:
-            name = "spectral"
-
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                raise AssertionError("add must refuse the grid first")
-
-            def state_from_parameters(self, parameters, reference_data):
-                # Stub: no test rebuilds this block's state.
-                return BlockState(parameters=dict(parameters))
-
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                raise AssertionError("unreachable")
-
-        wheel = Wheel(observed, random_seed=3)
-        wheel.add(WhiteNoise("time", 1.0, {}), role="noise")
-        before = snapshot(wheel)
-        with pytest.raises(ValueError, match="does not add across grids") as info:
-            wheel.add(NeverStarted(), role="noise", data_domain="frequency")
-        message = str(info.value)
-        assert "'spectral'" in message
-        assert "campaign covariance is on grid" in message
-        assert "data_domain='frequency'" in message
-        assert "data_domain='time'" in message
-        assert_unchanged(wheel, before)
-        assert "spectral" not in wheel._roles
-
-    def test_a_signal_block_on_another_grid_is_refused_at_add_and_at_run(
-        self, observed
-    ):
-        wheel = Wheel(observed, random_seed=3)
-        wheel.add(ConstSignal("early", 0.5), role="signal")
-        wheel.add(WhiteNoise("time", 1.0, {}), role="noise")
-        wheel.add(ConstSignal("same_grid", 0.5), role="signal", data_domain="time")
-        with pytest.raises(ValueError, match="does not translate between grids"):
-            wheel.add(ConstSignal("late", 0.5), role="signal", data_domain="frequency")
-        wheel.run(1)  # the blocks on the time grid still sample
-        wheel = Wheel(observed, random_seed=3)
-        wheel.add(ConstSignal("spectral", 0.5), role="signal", data_domain="frequency")
-        wheel.add(WhiteNoise("time", 1.0, {}), role="noise")
-        with pytest.raises(
-            ValueError,
-            match="'spectral' is registered on grid .* but the current covariance",
-        ):
-            wheel.run(1)
-
-    def test_the_first_noise_publication_fixes_the_grid(self, observed):
-        spectrum = observed.to_frequency()
-        wheel = Wheel(observed)
-        wheel.add(
-            FixedNoiseBlock("spectral", white_covariance(spectrum, 1.0)),
-            role="noise",
-            data_domain="frequency",
-        )
-        assert wheel._covariance_grid == spectrum.grid
-        assert wheel.covariance.grid == spectrum.grid
-        wheel.add(
-            FixedNoiseBlock("more", white_covariance(spectrum, 2.0)),
-            role="noise",
-            data_domain="frequency",
-        )
-        np.testing.assert_array_equal(
-            wheel.covariance.A, white_covariance(spectrum, 3.0).A
-        )
-        with pytest.raises(ValueError, match="does not add across grids"):
-            wheel.add(
-                FixedNoiseBlock("time", white_covariance(observed, 1.0)), role="noise"
-            )
-
-    def test_a_refused_first_noise_publication_leaves_the_grid_unset(self, observed):
-        class Publishes:
-            """A noise block on the time grid, publishing on frequency if off_grid."""
-
-            name = "noise"
-
-            def __init__(self, off_grid):
-                self.off_grid = off_grid
-
-            def initial_sample(self, conditional_residual, covariance, *, rng):
-                published_on = (
-                    transform(conditional_residual, "frequency")
-                    if self.off_grid
-                    else conditional_residual
-                )
-                return BlockState(covariance=white_covariance(published_on, 1.0))
-
-            def state_from_parameters(self, parameters, reference_data):
-                # Stub: no test rebuilds this block's state.
-                return BlockState(parameters=dict(parameters))
-
-            def sample(
-                self, conditional_residual, covariance, current_block_state, *, rng
-            ):
-                return current_block_state
-
-        wheel = Wheel(observed, random_seed=3)
-        before = snapshot(wheel)
-        with pytest.raises(
-            ValueError, match=re.escape("noise.initial_sample covariance is on grid")
-        ):
-            wheel.add(Publishes(off_grid=True), role="noise")
-        assert_unchanged(wheel, before)
-        assert wheel._covariance_grid is None
-        assert wheel.covariance is None
-        assert wheel._roles == {}
-        wheel.add(Publishes(off_grid=False), role="noise")
-        assert wheel._covariance_grid == observed.grid
-        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
+        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 4.0))
 
 
 class TestRemovedApi:
@@ -634,5 +532,14 @@ class TestRemovedApi:
             Wheel(observed, initial_covariance=covariance)
         with pytest.raises(TypeError, match="positional"):
             Wheel(observed, covariance)
-        assert not hasattr(Wheel(observed), "_covariance")
-        assert not hasattr(Wheel(observed), "_noise_owner_block_name")
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        assert not hasattr(wheel, "_covariance")
+        assert not hasattr(wheel, "_noise_owner_block_name")
+
+    def test_the_role_keyword_and_the_one_grid_rule_are_gone(self, observed):
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        with pytest.raises(TypeError, match="role"):
+            wheel.add(EchoBlock("e"), **{"role": "signal"})  # the keyword is gone
+        assert not hasattr(wheel, "_covariance_grid")
+        assert not hasattr(wheel, "_canonical_state")
+        assert not hasattr(wheel, "_observed_data")

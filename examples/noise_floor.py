@@ -1,20 +1,25 @@
 """Two noise blocks: a known floor plus a sampled excess variance on top of it.
 
-The campaign registers two blocks with role="noise". FixedNoiseBlock publishes
-the known instrument floor on every call; ExcessNoiseBlock samples an extra
-white-noise variance with a Metropolis random walk in log-variance. Wheel hands
-the excess block the floor as its `covariance` (the sum over the other noise
-blocks) and keeps the campaign covariance equal to floor + excess, which is what
-a signal block registered here would receive.
+The campaign registers two noise blocks, each declaring role = "noise".
+FixedNoiseBlock publishes the known instrument floor on every call;
+ExcessNoiseBlock samples an extra white-noise variance with a Metropolis random
+walk in log-variance. Wheel hands the excess block the floor as its `covariance`
+(the sum over the other noise blocks, translated onto the block's time grid) and
+keeps the campaign covariance equal to floor + excess on its WDM home grid,
+which a signal block registered on any grid would receive translated onto its
+own.
 
 The likelihood is a Gaussian likelihood of time-domain data with independent
 channels: each time sample is an independent real Gaussian whose variance is in
 per-sample units, and cross-channel terms are not modelled. On Fourier or WDM
-observations both blocks must therefore be registered with data_domain="time",
-and the floor built on that time grid. One excess variance is shared across all
-channels. ExcessNoiseBlock refuses a None floor, so it must be registered after
-another noise block. The Wheel records both blocks to a campaign file and the
-excess-variance chain is read back from it with `wheel.l2`. Run with:
+observations the excess block must therefore be registered with
+data_domain="time"; the floor may be published on any grid, since Wheel
+translates it onto the home grid and hands it to the excess block translated
+onto that time grid (exact for a white floor). One excess variance is shared
+across all channels. ExcessNoiseBlock refuses a None floor, so it must be
+registered after another noise block. The Wheel records both blocks to a
+campaign file and the excess-variance chain is read back from it with
+`wheel.l2`. Run with:
 
     uv run --no-sync python examples/noise_floor.py
 """
@@ -25,7 +30,7 @@ from typing import Any
 
 import numpy as np
 
-from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel, transform
 
 TRUTH = {"floor": 0.25, "excess": 0.75}
 
@@ -43,9 +48,12 @@ class ExcessNoiseBlock:
     per-sample units, and cross-channel terms are not modelled (a floor with
     cross-channel terms is refused). One excess variance is shared across all
     channels. On Fourier or WDM observations register the block with
-    `data_domain="time"` and build the floor on that time grid. The block
-    refuses a `None` floor, so register it after another noise block.
+    `data_domain="time"`; the floor may be published on any grid and reaches
+    this block translated onto its time grid. The block refuses a `None`
+    floor, so register it after another noise block.
     """
+
+    role = "noise"
 
     def __init__(
         self,
@@ -205,21 +213,25 @@ def run_example(
     with tempfile.TemporaryDirectory() as directory:
         with Wheel(
             observed,
+            num_frequency_divisions=32,  # the WDM home grid: 32 rows x 64 columns
             random_seed=int(campaign_seed.generate_state(1)[0]),
             output_path=Path(directory) / "noise_floor.h5",
         ) as wheel:
             # Both are noise blocks. The floor must go first because the excess
             # block refuses to start without it; Wheel keeps floor + excess as the
-            # campaign covariance.
-            wheel.add(FixedNoiseBlock("floor", floor), role="noise")
-            wheel.add(ExcessNoiseBlock("excess"), role="noise")
+            # campaign covariance on its home grid.
+            wheel.add(FixedNoiseBlock("floor", floor))
+            wheel.add(ExcessNoiseBlock("excess"))
 
             def report(cycle: int, w: Wheel) -> None:
                 if (cycle + 1) % 100 == 0:
                     draw = w.ledger["excess"].parameters["variance"]
+                    # The campaign covariance is on the home grid; read it on
+                    # the time grid.
+                    total = transform(w.covariance, "time").A[0]
                     print(
                         f"cycle {cycle + 1:4d}: excess variance draw = {draw:.4f}  "
-                        f"(campaign covariance A[0] = {w.covariance.A[0]:.4f})"
+                        f"(campaign covariance A[0] = {total:.4f})"
                     )
 
             wheel.run(n_cycles, on_cycle_complete=report)

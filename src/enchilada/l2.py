@@ -5,14 +5,21 @@ format version 1:
 
     /                              attrs: format, format_version, enchilada_version,
                                    num_steps (committed complete cycles)
-    /observation                   attrs: the observation grid and conventions
+    /observation                   attrs: the observation grid and conventions,
+                                   home_data_domain [, home_num_frequency_divisions,
+                                   home_num_time_divisions]
     /blocks/<name>                 attrs: role, index, first_step, data_domain,
                                    [num_frequency_divisions, num_time_divisions],
                                    keys, kinds, ndims, num_entries
     /blocks/<name>/shapes          int64 (num_entries, sum(ndims)), when sum(ndims) > 0
     /blocks/<name>/parameters/<k>  one packed, resizable dataset per parameter
 
-Entry i of a block is its state at step first_step + i; entry 0 is its start.
+The home grid is the grid the Wheel kept its sums on (WDM in every Wheel
+campaign; a writer that has none records the observation grid); it shares the
+observation's sample count and rate, and the divisions are written only for a
+WDM home grid. A block's `data_domain` and divisions are the grid it was
+registered on. Entry i of a block is its state at step first_step + i; entry 0
+is its start.
 Counters (`num_entries`, `num_steps`) are written after the data they count and
 the file is flushed after every record, so a reader trusts the counters and a
 crash loses at most the record in progress. `num_steps` bounds every block: a
@@ -37,7 +44,7 @@ from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid, WDMGrid
-from enchilada.translation import _data_on_grid, _state_on_grid
+from enchilada.translation import _data_on_grid, _state_on_grid, transform
 
 FORMAT = "enchilada-l2"
 FORMAT_VERSION = 1
@@ -113,7 +120,7 @@ class _Encoded:
     values: tuple[np.ndarray, ...]
 
 
-def _write_observation(group: h5py.Group, observed: L1Data) -> None:
+def _write_observation(group: h5py.Group, observed: L1Data, home_grid: Grid) -> None:
     group.attrs["data_domain"] = observed.data_domain
     group.attrs["num_time_samples"] = int(observed.num_time_samples)
     group.attrs["sample_rate_hz"] = float(observed.sample_rate_hz)
@@ -124,20 +131,26 @@ def _write_observation(group: h5py.Group, observed: L1Data) -> None:
         list(observed.channel_names), dtype=h5py.string_dtype()
     )
     _write_wdm_grid(group.attrs, observed.wdm_grid)
+    group.attrs["home_data_domain"] = home_grid.data_domain
+    _write_wdm_grid(group.attrs, home_grid.wdm_grid, prefix="home_")
 
 
-def _write_wdm_grid(attrs: MutableMapping[str, Any], wdm_grid: WDMGrid | None) -> None:
+def _write_wdm_grid(
+    attrs: MutableMapping[str, Any], wdm_grid: WDMGrid | None, *, prefix: str = ""
+) -> None:
     if wdm_grid is not None:
-        attrs["num_frequency_divisions"] = wdm_grid.num_frequency_divisions
-        attrs["num_time_divisions"] = wdm_grid.num_time_divisions
+        attrs[f"{prefix}num_frequency_divisions"] = wdm_grid.num_frequency_divisions
+        attrs[f"{prefix}num_time_divisions"] = wdm_grid.num_time_divisions
 
 
-def _wdm_grid_from_attrs(attrs: Mapping[str, Any]) -> WDMGrid | None:
-    if attrs["data_domain"] != "wdm":
+def _wdm_grid_from_attrs(
+    attrs: Mapping[str, Any], *, prefix: str = ""
+) -> WDMGrid | None:
+    if attrs[f"{prefix}data_domain"] != "wdm":
         return None
     return WDMGrid(
-        num_frequency_divisions=int(attrs["num_frequency_divisions"]),
-        num_time_divisions=int(attrs["num_time_divisions"]),
+        num_frequency_divisions=int(attrs[f"{prefix}num_frequency_divisions"]),
+        num_time_divisions=int(attrs[f"{prefix}num_time_divisions"]),
     )
 
 
@@ -150,13 +163,18 @@ def _grid_from_attrs(attrs: Mapping[str, Any]) -> Grid:
     )
 
 
-def _block_grid_from_attrs(attrs: Mapping[str, Any], observation_grid: Grid) -> Grid:
-    """A block group's grid: its domain and divisions on the observation's samples."""
+def _block_grid_from_attrs(
+    attrs: Mapping[str, Any], observation_grid: Grid, *, prefix: str = ""
+) -> Grid:
+    """A recorded grid: its domain and divisions on the observation's samples.
+
+    `prefix` "home_" reads the home grid from the observation's attributes.
+    """
     return Grid(
-        str(attrs["data_domain"]),
+        str(attrs[f"{prefix}data_domain"]),
         observation_grid.num_time_samples,
         observation_grid.sample_rate_hz,
-        _wdm_grid_from_attrs(attrs),
+        _wdm_grid_from_attrs(attrs, prefix=prefix),
     )
 
 
@@ -204,8 +222,17 @@ class _Recorder:
         self._schemas: dict[str, _Schema] = {}
 
     @classmethod
-    def create(cls, path: str | os.PathLike[str], observed: L1Data) -> _Recorder:
-        """Create the file (refusing an existing one) with the observation metadata."""
+    def create(
+        cls,
+        path: str | os.PathLike[str],
+        observed: L1Data,
+        *,
+        home_grid: Grid | None = None,
+    ) -> _Recorder:
+        """Create the file (refusing an existing one) with the observation metadata.
+
+        `home_grid` is as for `initialize`.
+        """
         name = os.fspath(path)
         # Checked explicitly: HDF5 reports "file exists" for a path this process
         # still holds open as a plain OSError, not FileExistsError.
@@ -216,7 +243,7 @@ class _Recorder:
             )
         file = h5py.File(name, "x")
         try:
-            return cls.initialize(file, observed)
+            return cls.initialize(file, observed, home_grid=home_grid)
         except BaseException:
             # Mode "x" proves this call made the file, so it is ours to remove.
             file.close()
@@ -225,17 +252,31 @@ class _Recorder:
             raise
 
     @classmethod
-    def initialize(cls, file: h5py.File, observed: L1Data) -> _Recorder:
+    def initialize(
+        cls, file: h5py.File, observed: L1Data, *, home_grid: Grid | None = None
+    ) -> _Recorder:
         """Write the format and observation metadata into an open, writable `file`.
 
         For a writer that opens the file itself to put other groups beside
         `blocks` (a simulation's truth and data, say); `create` uses it too.
+        `home_grid` is the grid the writer keeps its sums on, the Wheel's home
+        grid; None records the observation grid. It must share the
+        observation's sample count and rate.
         """
+        home = observed.grid if home_grid is None else home_grid
+        if (home.num_time_samples, home.sample_rate_hz) != (
+            observed.num_time_samples,
+            observed.sample_rate_hz,
+        ):
+            raise ValueError(
+                f"home grid {home} does not share the observation's sample count "
+                f"and rate ({observed.grid})"
+            )
         file.attrs["format"] = FORMAT
         file.attrs["format_version"] = FORMAT_VERSION
         file.attrs["enchilada_version"] = _enchilada_version()
         file.attrs["num_steps"] = 0
-        _write_observation(file.create_group("observation"), observed)
+        _write_observation(file.create_group("observation"), observed, home)
         file.create_group("blocks")
         file.flush()
         return cls(file)
@@ -490,8 +531,12 @@ class L2Data:
 
     The file holds parameters, not templates. `states`, `covariance` and
     `residual` take the block instances and call their `state_from_parameters`
-    on each block's registered grid, then translate templates to the
-    observation grid the way the Wheel does. `residual` needs the observed
+    on each block's registered grid, then bring the results onto the home grid
+    the way the Wheel does: templates by an exact transform, covariances (for
+    the sum) by `transform`'s diagonal translation. So `states` agrees with
+    `wheel.ledger`, `covariance` with `wheel.covariance` and `residual` with the
+    Wheel's working residual on the home grid (`wheel.working_residual` is that
+    residual brought back to the arrival grid). `residual` needs the observed
     data: attach it with `observed_data` at `open` (it also carries the orbit
     blocks may need); the live view has the Wheel's.
     """
@@ -503,6 +548,7 @@ class L2Data:
         self._file = file
         self._owns_file = owns_file
         self._observed: L1Data | None = None
+        self._observed_on_home: L1Data | None = None
         if observed_data is not None:
             self._attach(observed_data)
 
@@ -603,6 +649,15 @@ class L2Data:
     def observation_grid(self) -> Grid:
         """The grid of the observation the campaign ran on."""
         return _grid_from_attrs(self._require_open()["observation"].attrs)
+
+    @property
+    def home_grid(self) -> Grid:
+        """The grid the campaign kept its sums on; rebuilt states come back on it."""
+        return _block_grid_from_attrs(
+            self._require_open()["observation"].attrs,
+            self.observation_grid,
+            prefix="home_",
+        )
 
     @property
     def channel_names(self) -> tuple[str, ...]:
@@ -804,8 +859,12 @@ class L2Data:
             raise ValueError(f"unknown blocks {unknown}; recorded: {list(recorded)}")
 
     def _rebuild(self, resolved: int, named: dict[str, Block]) -> dict[str, BlockState]:
-        """Rebuild each block's state at the resolved step, in the order given."""
+        """Rebuild each block's state at the resolved step, in the order given.
+
+        Templates come back on the home grid; covariances on their block's grid.
+        """
         observation_grid = self.observation_grid
+        home_grid = self.home_grid
         obs_attrs = self._require_open()["observation"].attrs
         # Resolve every block before rebuilding any: a late block fails first.
         infos: dict[str, tuple[_BlockInfo, int]] = {}
@@ -858,9 +917,7 @@ class L2Data:
                     wdm_grid=reference.wdm_grid,
                     context_label=f"{label} template",
                 )
-            result[name] = _state_on_grid(
-                rebuilt, observation_grid, reference_data=reference
-            )
+            result[name] = _state_on_grid(rebuilt, home_grid, reference_data=reference)
         return result
 
     @staticmethod
@@ -889,28 +946,28 @@ class L2Data:
         if role == "signal":
             if state.covariance is not None:
                 raise ValueError(
-                    f"{label} returned a covariance but {name!r} is registered as a "
-                    f"signal block (rebuilding step {step})"
+                    f"{label} returned a covariance but {name!r} was recorded with "
+                    f"role 'signal' (rebuilding step {step})"
                 )
         else:
             if state.template is not None:
                 raise ValueError(
-                    f"{label} returned a template but {name!r} is registered as a "
-                    f"noise block (rebuilding step {step})"
+                    f"{label} returned a template but {name!r} was recorded with "
+                    f"role 'noise' (rebuilding step {step})"
                 )
             if state.covariance is None:
                 raise ValueError(
-                    f"{label} must return a covariance because {name!r} is "
-                    f"registered as a noise block (rebuilding step {step})"
+                    f"{label} must return a covariance because {name!r} was "
+                    f"recorded with role 'noise' (rebuilding step {step})"
                 )
 
     def states(self, step: int, blocks: Iterable[Block]) -> dict[str, BlockState]:
         """Each given block's state at `step`, keyed by name in the order given.
 
         The block's `state_from_parameters` rebuilds it on its registered grid;
-        the template then moves to the observation grid as the Wheel's does, and
-        a covariance keeps the grid it was published on. Every block in `blocks`
-        must be recorded at `step`.
+        the template then moves to the home grid, where the Wheel's ledger keeps
+        it, and a covariance keeps the grid it was published on, as in the
+        ledger. Every block in `blocks` must be recorded at `step`.
         """
         resolved = self._resolve_step(step)
         named = self._named(blocks, "states")
@@ -940,28 +997,45 @@ class L2Data:
         return {name: named[name] for name in needed}
 
     def covariance(self, step: int, blocks: Iterable[Block]) -> Covariance | None:
-        """The sum of the noise blocks' covariances at `step`.
+        """The sum of the noise blocks' covariances at `step`, on the home grid.
 
-        Every noise block recorded at `step` must be in `blocks`; signal blocks
-        and blocks not yet registered are ignored. None when no noise block is
+        Each rebuilt covariance is translated onto the home grid with
+        `transform`, as the Wheel's noise sum takes it, then summed. Every
+        noise block recorded at `step` must be in `blocks`; signal blocks and
+        blocks not yet registered are ignored. None when no noise block is
         recorded at `step`.
         """
         resolved = self._resolve_step(step)
         named = self._named(blocks, "covariance")
         self._check_known(named)
         needed = self._required("covariance", "noise", resolved, named)
+        home_grid = self.home_grid
         total: Covariance | None = None
         for state in self._rebuild(resolved, needed).values():
             # A noise rebuild always carries one: `_check_role` enforced it.
             covariance = cast(Covariance, state.covariance)
+            if covariance.grid != home_grid:
+                covariance = transform(
+                    covariance,
+                    home_grid.data_domain,
+                    num_frequency_divisions=(
+                        None
+                        if home_grid.wdm_grid is None
+                        else home_grid.wdm_grid.num_frequency_divisions
+                    ),
+                )
             total = covariance if total is None else total + covariance
         return total
 
     def residual(self, step: int, blocks: Iterable[Block]) -> L1Data:
         """The observation minus every signal block's rebuilt template at `step`.
 
-        Needs `observed_data`. Every signal block recorded at `step` must be in
-        `blocks`; noise blocks and blocks not yet registered are ignored.
+        On the home grid, as the Wheel forms it: the observation brought onto
+        the home grid once, minus the templates `states` returns.
+        `wheel.working_residual` is the same residual on the arrival grid;
+        `transform` brings this one there. Needs `observed_data`. Every signal
+        block recorded at `step` must be in `blocks`; noise blocks and blocks
+        not yet registered are ignored.
         """
         if self._observed is None:
             raise ValueError(
@@ -971,12 +1045,15 @@ class L2Data:
         named = self._named(blocks, "residual")
         self._check_known(named)
         needed = self._required("residual", "signal", resolved, named)
+        if self._observed_on_home is None:
+            self._observed_on_home = _data_on_grid(self._observed, self.home_grid)
+        observed = self._observed_on_home
         channel_data = {
-            name: array.copy() for name, array in self._observed.channel_data.items()
+            name: array.copy() for name, array in observed.channel_data.items()
         }
         for state in self._rebuild(resolved, needed).values():
             if state.template is None:
                 continue
             for name in channel_data:
                 channel_data[name] = channel_data[name] - state.template[name]
-        return replace(self._observed, channel_data=channel_data)
+        return replace(observed, channel_data=channel_data)

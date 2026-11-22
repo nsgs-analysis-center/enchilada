@@ -68,6 +68,10 @@ class ForgeBlock:
     draw.
     """
 
+    # publishes a template; Wheel reads this at add. A class attribute, not a
+    # dataclass field: an annotation would make it an __init__ parameter.
+    role = "signal"
+
     name: str = "forge"
     frequency_hz: float = 1e-3
     prior_std: float = 1e-17
@@ -103,7 +107,7 @@ class ForgeBlock:
         if conditional_residual.data_domain != "frequency":
             raise ValueError(
                 f"{self.name}: needs frequency-grid data (register it with "
-                "Wheel.add(..., role='signal', data_domain='frequency') or pass "
+                "Wheel.add(..., data_domain='frequency') or pass "
                 f"transform(data, 'frequency')); got "
                 f"{conditional_residual.data_domain!r} data"
             )

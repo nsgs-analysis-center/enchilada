@@ -59,6 +59,7 @@
 <circle cx="500" cy="470" r="128" fill="#ffffff" stroke="#2a2522" stroke-width="2"/>
 <text x="500" y="398" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#2a2522" text-anchor="middle">Wheel</text>
 <text x="500" y="415" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#6e655d" text-anchor="middle">wheel.py</text>
+<text x="500" y="430" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#6e655d" text-anchor="middle">home grid: wdm</text>
 <text x="500" y="448" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">d</tspan>  observed data</text>
 <text x="500" y="470" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">r</tspan> = <tspan font-style="italic">d</tspan> − Σ<tspan dy="4" font-size="9">j</tspan><tspan dy="-4" font-style="italic"> T</tspan><tspan dy="4" font-size="9">j</tspan><tspan dy="-4">  residual</tspan></text>
 <text x="500" y="492" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#2a2522" text-anchor="middle"><tspan font-style="italic" font-weight="700">C</tspan>  sum of noise covariances</text>
@@ -101,7 +102,7 @@
 <text x="124.5" y="604.3" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="700" fill="#1d5b6f" text-anchor="middle">5</text>
 <rect x="120.5" y="264.0" width="184" height="80" rx="12" fill="#ffffff" stroke="#6e655d" stroke-width="1.8" stroke-dasharray="6 4"/>
 <text x="212.5" y="291.0" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="700" fill="#2a2522" text-anchor="middle">+ your block</text>
-<text x="212.5" y="310.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2a2522" text-anchor="middle">wheel.add(block, role=…)</text>
+<text x="212.5" y="310.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" fill="#2a2522" text-anchor="middle">wheel.add(block)</text>
 <rect x="187.5" y="318.0" width="50" height="17" rx="8.5" fill="#6e655d" fill-opacity="0.12" stroke="#6e655d" stroke-opacity="0.75" stroke-width="1"/>
 <text x="212.5" y="330.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#2a2522" text-anchor="middle">State</text>
 <circle cx="124.5" cy="268.0" r="11.5" fill="#ffffff" stroke="#6e655d" stroke-width="2"/>
@@ -136,6 +137,7 @@
 <text x="548" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">translation.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  transform()</tspan></text>
 <text x="548" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">_transforms.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  FFT, WDM</tspan></text>
 <text x="548" y="938" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">domains.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  WDMGrid</tspan></text>
+<text x="548" y="957" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">_spectral.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  covariance translation</tspan></text>
 <text x="778" y="878" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="0.6" fill="#2a2522">BLOCK CONTRACT</text>
 <text x="778" y="900" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">block.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  Block protocol</tspan></text>
 <text x="778" y="919" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#2a2522">block_state.py<tspan font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" fill="#6e655d">  BlockState</tspan></text>
