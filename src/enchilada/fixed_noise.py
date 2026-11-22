@@ -12,14 +12,17 @@ from enchilada.data import L1Data
 class FixedNoiseBlock:
     """Publish a known covariance as a noise block; nothing is sampled.
 
-    ``wheel.add(FixedNoiseBlock("floor", covariance), role="noise")`` adds
-    ``covariance`` to the campaign's noise sum at registration and republishes
-    it every cycle, so signal blocks receive it and other noise blocks add
-    their own models on top. The covariance must be on the grid the block is
-    registered on (``data_domain`` at ``add``), like any noise publication.
-    ``initial_sample`` and ``sample`` ignore their inputs and draw nothing.
-    The constructor keeps an independent, revalidated copy.
+    ``wheel.add(FixedNoiseBlock("floor", covariance))`` adds ``covariance`` to
+    the campaign's noise sum at registration and republishes it every cycle,
+    so signal blocks receive it and other noise blocks add their own models on
+    top. The covariance must be on the grid the block is registered on
+    (``data_domain`` at ``add``), like any noise publication; Wheel translates
+    it onto the home grid for the sum. ``initial_sample`` and ``sample``
+    ignore their inputs and draw nothing. The constructor keeps an
+    independent, revalidated copy.
     """
+
+    role = "noise"
 
     def __init__(self, name: str, covariance: Covariance) -> None:
         if not isinstance(covariance, Covariance):
