@@ -2455,13 +2455,13 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -1,4 +1,4 @@
 -"""Roles at Wheel.add: signal blocks sum templates, noise blocks sum covariances."""
 +"""Declared roles: signal blocks sum templates, noise blocks sum covariances."""
- 
+
  import re
  from dataclasses import dataclass
 @@ -13,9 +13,16 @@
  from enchilada.testing import EchoBlock
- 
- 
+
+
 +def home_level(observed, variance):
 +    """White time variance `variance` as it reads on the WDM home grid: dt * sigma^2."""
 +    return variance / observed.fs
@@ -2469,7 +2469,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +
  class ConstSignal:
      """A signal block publishing a constant template; `state.updates` counts samples."""
- 
+
 +    role = "signal"
 +
      @dataclass
@@ -2478,7 +2478,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -47,6 +54,8 @@
      first; `sample` republishes the last accepted state unchanged.
      """
- 
+
 +    role = "noise"
 +
      def __init__(self, name, level, seen):
@@ -2486,21 +2486,21 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          self.level = level
 @@ -82,8 +91,8 @@
          )
- 
- 
+
+
 -def offender(role, method, *, with_template, with_covariance):
 -    """A block of `role` whose `method` returns the given fields.
 +def offender(declared, method, *, with_template, with_covariance):
 +    """A block declaring role `declared` whose `method` returns the given fields.
- 
+
      The other method returns what the role allows, so the block registers and
      samples normally until `method` is called.
 @@ -91,10 +100,11 @@
- 
+
      class Offender:
          name = "offender"
 +        role = declared
- 
+
          @staticmethod
          def _allowed(conditional_residual):
 -            if role == "noise":
@@ -2525,8 +2525,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      _same_array(after["covariance"], before["covariance"])
      for name, (template, covariance, parameters) in before["ledger"].items():
 @@ -169,32 +177,27 @@
- 
- 
+
+
  class TestRoles:
 -    def test_role_is_validated_before_the_block_is_inspected(self, observed):
 -        class Untouchable:
@@ -2538,7 +2538,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +    def test_the_role_is_read_from_the_block_after_the_protocol_checks(self, observed):
 +        class RoleLess(ConstSignal):
 +            role = None
- 
+
 -        wheel = Wheel(observed)
 -        for role in ("Signal", "noise ", "", None, 1):
 -            with pytest.raises(ValueError, match="role must be 'signal' or 'noise'"):
@@ -2557,7 +2557,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          assert len(wheel.ledger) == 0
          assert wheel._blocks == []
          assert wheel._roles == {}
- 
+
 -    def test_the_role_message_shows_the_offending_value(self, observed):
 -        with pytest.raises(ValueError, match=re.escape("got 'Noise'")):
 -            Wheel(observed).add(EchoBlock("e"), role="Noise")
@@ -2570,7 +2570,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        wheel.add(WhiteNoise("noise", 1.0, {}))
 +        wheel.add(ConstSignal("signal", 1.0))
          assert wheel._roles == {"noise": "noise", "signal": "signal"}
- 
+
      @pytest.mark.parametrize("method", ["initial_sample", "sample"])
 @@ -202,12 +205,12 @@
          self._check_refusal(
@@ -2587,7 +2587,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +                "declares role 'signal'"
              ),
          )
- 
+
 @@ -216,12 +219,12 @@
          self._check_refusal(
              observed,
@@ -2603,7 +2603,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +                "declares role 'noise'"
              ),
          )
- 
+
 @@ -230,32 +233,35 @@
          self._check_refusal(
              observed,
@@ -2618,7 +2618,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +                "declares role 'noise'"
              ),
          )
- 
+
      @staticmethod
      def _check_refusal(
 -        observed, method, *, role, with_template, with_covariance, message
@@ -2655,13 +2655,13 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          else:
 -            assert wheel._roles["offender"] == role
 +            assert wheel._roles["offender"] == declared
- 
+
      def test_a_noise_block_cannot_smuggle_a_non_finite_covariance_past_revalidation(
          self, observed
 @@ -282,17 +288,17 @@
                      covariance=published, parameters={"level": self.level}
                  )
- 
+
 -        wheel = Wheel(observed, random_seed=3)
 +        wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
          # The only noise block, so no Covariance.__add__ in the sum revalidates it:
@@ -2677,8 +2677,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          assert wheel._roles == {"smuggler": "noise", "signal": "signal"}
 -        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 1.0))
- 
- 
+
+
  class TestNoiseSum:
 @@ -300,58 +306,57 @@
          self, observed
@@ -2693,7 +2693,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          assert seen["signal"] == [None, None]
          assert wheel.covariance is None
 -        assert wheel._covariance_grid is None
- 
+
      def test_two_noise_blocks_each_receive_the_other_and_wheel_holds_the_sum(
          self, observed
      ):
@@ -2720,7 +2720,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 -        assert wheel._covariance_grid == observed.grid
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
 +        assert wheel.covariance.grid == wheel.home_grid
- 
+
      def test_a_signal_block_receives_the_sum_over_every_noise_block(self, observed):
          seen = {}
 -        wheel = Wheel(observed)
@@ -2742,7 +2742,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
              for received in seen[name][1:]:
 -                np.testing.assert_array_equal(received, 3.0)
 +                np.testing.assert_allclose(received, 3.0)
- 
+
      def test_three_noise_blocks_each_receive_the_sum_of_the_other_two(self, observed):
          seen = {}
 -        wheel = Wheel(observed)
@@ -2761,13 +2761,13 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        np.testing.assert_allclose(seen["b"][1], 5.0)
 +        np.testing.assert_allclose(seen["c"][1], 3.0)
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 7.0))
- 
+
      def test_a_republished_covariance_replaces_that_block_s_slot(self, observed):
          class Growing(WhiteNoise):
 @@ -361,27 +366,28 @@
                  self.level += 1.0
                  return self.initial_sample(conditional_residual, covariance, rng=rng)
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Growing("growing", 1.0, {}), role="noise")
 -        wheel.add(
@@ -2786,7 +2786,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 13.0))
          np.testing.assert_array_equal(wheel.ledger["growing"].covariance.A, 3.0)
          np.testing.assert_array_equal(wheel.ledger["fixed"].covariance.A, 10.0)
- 
+
      def test_noise_blocks_contribute_no_signal(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
@@ -2809,7 +2809,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -402,26 +408,29 @@
                      conditional_residual, covariance, current_block_state, rng=rng
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
 -        wheel.add(WhiteNoise("b", 2.0, {}), role="noise")
@@ -2830,7 +2830,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 3.0))
          assert type(wheel.covariance) is Covariance
          assert not wheel.covariance.blocks.flags.writeable
- 
+
      def test_the_sum_describes_the_observations(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(WhiteNoise("a", 1.0, {}), role="noise")
@@ -2843,12 +2843,12 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +            transform(observed, "wdm", num_frequency_divisions=8)
 +        )
 +        transform(wheel.covariance, "time").check_compatible(observed)
- 
+
      def test_a_noise_block_cannot_corrupt_the_others_through_its_hand_over(
          self, observed
 @@ -440,16 +449,17 @@
                  )
- 
+
          seen = {}
 -        wheel = Wheel(observed)
 -        wheel.add(WhiteNoise("a", 2.0, seen), role="noise")
@@ -2869,11 +2869,11 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +            wheel._noise_sum.excluding(wheel._block_indices["b"]).A,
 +            home_level(observed, 2.0),
          )
- 
+
      def test_a_refused_noise_block_keeps_its_siblings_new_publication(self, observed):
 @@ -472,133 +482,24 @@
                  return const_block_state(conditional_residual, 0.5)
- 
+
          seen = {}
 -        wheel = Wheel(observed)
 -        wheel.add(Rising("a", 2.0, seen), role="noise")
@@ -2897,8 +2897,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          assert wheel.ledger["b"].template is None
 -        np.testing.assert_array_equal(wheel.covariance.A, 4.0)
 +        np.testing.assert_allclose(wheel.covariance.A, home_level(observed, 4.0))
- 
- 
+
+
 -class TestCovarianceGrid:
 -    """The first noise publication fixes the grid of the sum."""
 -
@@ -3032,15 +3032,15 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +++ b/tests/test_initial_sample.py
 @@ -38,6 +38,7 @@
      """
- 
+
      name = "starting"
 +    role = "signal"
- 
+
      @dataclass
      class State:
 @@ -84,6 +85,8 @@
      """A StartingBlock whose start publishes only white noise of `level`."""
- 
+
      class NoiseStart(StartingBlock):
 +        role = "noise"
 +
@@ -3048,7 +3048,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
              self.state.starts.append((conditional_residual, covariance, rng))
              return BlockState(covariance=white_covariance(conditional_residual, level))
 @@ -100,10 +103,10 @@
- 
+
      assert not isinstance(SampleOnly(), Block)
      assert isinstance(StartingBlock(), Block)
 -    wheel = Wheel(observed, random_seed=1)
@@ -3063,7 +3063,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -123,16 +126,16 @@
              )
              return super().initial_sample(conditional_residual, covariance, rng=rng)
- 
+
 -    wheel = Wheel(observed, random_seed=5)
 +    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=5)
      block = ChecksAliasing()
@@ -3083,8 +3083,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      assert shared == [False]
      wheel.run(1)
 @@ -141,13 +144,13 @@
- 
- 
+
+
  def test_initial_sample_receives_the_campaign_covariance(observed):
 -    wheel = Wheel(observed)
 -    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 0.25)), role="noise")
@@ -3099,10 +3099,10 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +    np.testing.assert_allclose(covariance.A, 0.25)
      assert covariance is not wheel._noise_sum.total
      assert not covariance.blocks.flags.writeable
- 
+
 @@ -159,8 +162,8 @@
              return super().initial_sample(conditional_residual, covariance, rng=rng)
- 
+
      def start(seed, block):
 -        wheel = Wheel(observed, random_seed=seed)
 -        wheel.add(block, role="signal")
@@ -3110,7 +3110,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        wheel.add(block)
          wheel.run(1)
          return wheel.ledger["starting"].parameters["amplitude"], block.state.draw
- 
+
 @@ -195,9 +198,9 @@
      )
      canonical = transform(observed, canonical_domain, **canonical_options)
@@ -3124,16 +3124,16 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      assert residual.data_domain == (block_domain or canonical_domain)
      if block_domain == "wdm":
 @@ -230,15 +233,16 @@
- 
+
      class RememberedNoise(StartingBlock):
          name = "noise"
 +        role = "noise"
- 
+
          def initial_sample(self, conditional_residual, covariance, *, rng):
              start = BlockState(covariance=white_covariance(conditional_residual, 0.25))
              returned["noise"] = start
              return start
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(RememberedNoise(), role="noise")
 -    wheel.add(RememberedStart(), role="signal")
@@ -3152,8 +3152,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 0.25)
 -    np.testing.assert_array_equal(wheel.covariance.A, 0.25)
 +    np.testing.assert_allclose(wheel.covariance.A, 0.25 / observed.fs)
- 
- 
+
+
  @pytest.mark.parametrize("block_domain", [None, "frequency"])
 @@ -292,22 +296,22 @@
          "type": (TypeError, "starting.initial_sample must return a BlockState"),
@@ -3182,7 +3182,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +    wheel.add(block, data_domain=block_domain)
      wheel.run(1)
      assert block.state.draw == np.random.default_rng(7).normal()
- 
+
 @@ -315,6 +319,8 @@
  @pytest.mark.parametrize("with_noise", [False, True])
  def test_start_without_signal_can_sample_in_selected_domain(observed, with_noise):
@@ -3195,7 +3195,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -344,21 +350,24 @@
              self.state.counter += 1
              return current_block_state
- 
+
 -    wheel = Wheel(observed)
 +    wheel = Wheel(observed, num_frequency_divisions=8)
      block = NoiseOrNothing()
@@ -3213,8 +3213,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        np.testing.assert_allclose(transform(wheel.covariance, "frequency").A, 100.0)
      else:
          assert wheel.covariance is None
- 
- 
+
+
  def test_a_noise_block_must_publish_a_covariance_on_every_call(observed):
      class DropsNoise(StartingBlock):
 +        role = "noise"
@@ -3225,7 +3225,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 @@ -368,79 +377,78 @@
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
              return BlockState(parameters={"variance": 0.25})
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(DropsNoise(), role="noise")
 -    np.testing.assert_array_equal(wheel.residual().channel_data["A"], 5)
@@ -3245,8 +3245,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      np.testing.assert_array_equal(wheel.ledger["starting"].covariance.A, 0.25)
 -    np.testing.assert_array_equal(wheel.covariance.A, 0.25)
 +    np.testing.assert_allclose(wheel.covariance.A, 0.25 / observed.fs)
- 
- 
+
+
  def test_two_noise_starts_add_and_the_second_receives_the_first(observed):
 -    wheel = Wheel(observed, random_seed=3)
 +    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
@@ -3264,8 +3264,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      np.testing.assert_array_equal(wheel.ledger["second"].covariance.A, 2.0)
 -    np.testing.assert_array_equal(wheel.covariance.A, 3.0)
 +    np.testing.assert_allclose(wheel.covariance.A, 3.0 / observed.fs)
- 
- 
+
+
  def test_check_block_can_exercise_a_configured_start(observed):
      block = StartingBlock(amplitude=4.0)
 -    check_block(block, observed, num_cycles=2, role="signal")
@@ -3274,8 +3274,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      assert block.state.counter == 2
 -    np.testing.assert_array_equal(block.state.starts[0][0].channel_data["A"], 5.0)
 +    np.testing.assert_allclose(block.state.starts[0][0].channel_data["A"], 5.0)
- 
- 
+
+
  def test_later_blocks_start_from_the_residual_of_earlier_starts(observed):
 -    wheel = Wheel(observed)
 +    wheel = Wheel(observed, num_frequency_divisions=8)
@@ -3292,8 +3292,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      assert second_residual.data_domain == "frequency"
      np.testing.assert_allclose(transform(second_residual, "time").channel_data["A"], 3)
      np.testing.assert_allclose(wheel.residual().channel_data["A"], 2.0)
- 
- 
+
+
 -def test_covariance_on_another_grid_is_refused_at_add(observed):
 -    wheel = Wheel(observed, random_seed=3)
 -    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 0.25)), role="noise")
@@ -3322,8 +3322,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +    assert wheel.covariance.grid == wheel.home_grid
 +    wheel.run(1)
 +    assert block.state.counter == 1
- 
- 
+
+
  def test_start_that_publishes_a_covariance_is_handed_to_the_next_block(observed):
 -    wheel = Wheel(observed)
 +    wheel = Wheel(observed, num_frequency_divisions=8)
@@ -3341,17 +3341,17 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +++ b/tests/test_testing.py
 @@ -4,7 +4,7 @@
  import pytest
- 
+
  from conftest import make_observed, white_covariance
 -from enchilada import BlockState, FixedNoiseBlock, Wheel
 +from enchilada import BlockState, FixedNoiseBlock, Wheel, transform
  from enchilada.testing import EchoBlock, check_block
- 
- 
+
+
 @@ -32,6 +32,8 @@
  class FlatNoiseBlock:
      """A noise block publishing white noise of `level` from both methods."""
- 
+
 +    role = "noise"
 +
      def __init__(self, name, level, seen=None):
@@ -3366,11 +3366,11 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
              noise_blocks=(FixedNoiseBlock("noise", white_covariance(observed, 1.0)),),
              random_seed=0,
          )
- 
+
      def test_conforming_signal_block_passes_without_noise(self, observed):
 -        check_block(EchoBlock(name="echo"), observed, role="signal")
 +        check_block(EchoBlock(name="echo"), observed, num_frequency_divisions=8)
- 
+
 -    def test_role_is_required(self, observed):
 +    def test_a_signal_block_among_the_noise_blocks_is_refused(self, observed):
 +        with pytest.raises(ValueError, match="noise_blocks entry 'echo' declares role"):
@@ -3383,7 +3383,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          with pytest.raises(TypeError, match="role"):
 -            check_block(EchoBlock(name="echo"), observed)
 +            check_block(EchoBlock(name="echo"), observed, **{"role": "signal"})
- 
+
      def test_conforming_in_frequency_domain(self, rng):
          n = 64
 @@ -78,7 +87,7 @@
@@ -3392,25 +3392,25 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          )
 -        check_block(EchoBlock(name="echo"), obs, role="signal")
 +        check_block(EchoBlock(name="echo"), obs, num_frequency_divisions=8)
- 
+
      def test_non_block_state_return_caught(self, observed):
          class Bad(EchoBlock):
 @@ -93,7 +102,7 @@
                  return {"A": np.zeros(1)}  # not a BlockState
- 
+
          with pytest.raises(TypeError, match="must return a BlockState"):
 -            check_block(Bad(name="bad"), observed, role="signal")
 +            check_block(Bad(name="bad"), observed, num_frequency_divisions=8)
- 
+
      def test_off_grid_block_state_caught(self, observed):
          class Drifter(EchoBlock):
 @@ -112,10 +121,14 @@
                  )
- 
+
          with pytest.raises(ValueError, match="length 3, expected"):
 -            check_block(Drifter(name="drift"), observed, role="signal")
 +            check_block(Drifter(name="drift"), observed, num_frequency_divisions=8)
- 
+
      def test_conforming_noise_block_passes(self, observed):
 -        check_block(FlatNoiseBlock("noise", 1.0), observed.to_frequency(), role="noise")
 +        check_block(
@@ -3418,16 +3418,16 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +            observed.to_frequency(),
 +            num_frequency_divisions=8,
 +        )
- 
+
      def test_noise_model_violating_contract_caught(self, observed):
          class BadNoise(EchoBlock):
 @@ -123,13 +136,17 @@
                  return conditional_residual.block_state().with_covariance(object())
- 
+
          with pytest.raises(TypeError, match="Covariance"):
 -            check_block(BadNoise(name="bad"), observed, role="noise")
 +            check_block(BadNoise(name="bad"), observed, num_frequency_divisions=8)
- 
+
      def test_role_violations_are_caught(self, observed):
 -        with pytest.raises(ValueError, match="registered as a signal block"):
 -            check_block(FlatNoiseBlock("noise", 1.0), observed, role="signal")
@@ -3441,7 +3441,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        echo.role = "noise"
 +        with pytest.raises(ValueError, match="declares role 'noise'"):
 +            check_block(echo, observed, num_frequency_divisions=8)
- 
+
      def test_noise_blocks_register_first_and_the_signal_block_receives_their_sum(
          self, observed
 @@ -139,7 +156,7 @@
@@ -3459,7 +3459,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          for received in seen:
 -            np.testing.assert_array_equal(received, 3.0)
 +            np.testing.assert_allclose(received, 3.0)
- 
+
      def test_a_noise_block_under_test_receives_the_other_noise_blocks(self, observed):
          seen = []
 @@ -155,12 +172,12 @@
@@ -3474,26 +3474,26 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          for received in seen:
 -            np.testing.assert_array_equal(received, 1.0)  # the floor, not itself
 +            np.testing.assert_allclose(received, 1.0)  # the floor, not itself
- 
+
      def test_block_without_initial_sample_is_refused(self, observed):
          class SampleOnly:
 @@ -177,7 +194,7 @@
                  return current_block_state
- 
+
          with pytest.raises(TypeError, match="does not implement initial_sample"):
 -            check_block(SampleOnly(), observed, role="signal")
 +            check_block(SampleOnly(), observed, num_frequency_divisions=8)
- 
+
      def test_failing_initial_sample_is_caught(self, observed):
          class BadStart(EchoBlock):
 @@ -185,7 +202,7 @@
                  return {"A": np.zeros(1)}  # not a BlockState
- 
+
          with pytest.raises(TypeError, match="initial_sample must return a BlockState"):
 -            check_block(BadStart(name="bad"), observed, role="signal")
 +            check_block(BadStart(name="bad"), observed, num_frequency_divisions=8)
- 
- 
+
+
  class TestFixedNoiseBlock:
 @@ -193,39 +210,40 @@
          check_block(
@@ -3502,7 +3502,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 -            role="noise",
 +            num_frequency_divisions=8,
          )
- 
+
      def test_gives_a_campaign_a_known_covariance(self, observed):
          covariance = white_covariance(observed, 7.0)
 -        wheel = Wheel(observed)
@@ -3518,7 +3518,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        np.testing.assert_allclose(wheel.covariance.A, 7.0 / observed.fs)
          np.testing.assert_array_equal(wheel.ledger["floor"].covariance.A, 7.0)
          assert wheel.ledger["floor"].template is None
- 
+
      def test_must_be_registered_on_its_covariance_grid(self, observed):
 -        wheel = Wheel(observed)
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -3537,8 +3537,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +            transform(wheel.covariance, "frequency").A, spectral.A, rtol=1e-12
          )
 -        assert wheel.covariance.grid == observed.to_frequency().grid
- 
- 
+
+
  class TestEchoBlock:
      def test_keeps_sampling_counter_in_local_state(self, observed):
          echo = EchoBlock(name="echo")
@@ -3551,7 +3551,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
          published = wheel.ledger["echo"]
 @@ -235,12 +253,15 @@
          assert echo.state.metadata == {}
- 
+
      def test_contributes_a_zero_signal(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(EchoBlock(name="echo"), role="signal")
@@ -3567,8 +3567,8 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +                rtol=1e-12,
 +                atol=1e-12,
              )
- 
- 
+
+
 --- a/tests/test_typing.py
 +++ b/tests/test_typing.py
 @@ -44,20 +44,21 @@
@@ -3594,16 +3594,16 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 -check_block(FixedNoiseBlock("probe", noise), r, role="noise")
 +check_block(FixedNoiseBlock("probe", noise), r, num_frequency_divisions=2)
  from enchilada import NoiseOverwrittenWarning   # removed: static error
- 
+
  class SampleOnly:
      name = "sample_only"
 +    role = "signal"
- 
+
      def sample(
          self, conditional_residual: L1Data,
 @@ -67,10 +68,29 @@
          return current_block_state
- 
+
  sample_only: Block = SampleOnly()   # no initial_sample: not a Block
 +
 +class RoleLess:
@@ -3623,39 +3623,39 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +        return current_block_state
 +
 +roleless: Block = RoleLess()   # no role: not a Block
- 
+
  @dataclass(frozen=True)
  class FrozenBlock:
      name: str = "frozen"
 +    role = "signal"
- 
+
      def initial_sample(
          self, conditional_residual: L1Data,
 @@ -86,12 +106,13 @@
          return current_block_state
- 
+
  frozen: Block = FrozenBlock()
 -wheel.add(FrozenBlock(), role="signal")
 -check_block(FrozenBlock(), r, role="signal")
 +wheel.add(FrozenBlock())
 +check_block(FrozenBlock(), r, num_frequency_divisions=2)
- 
+
  @dataclass(frozen=True)
  class ExplicitBlock(Block):
      name: str
 +    role = "signal"
- 
+
      def initial_sample(
          self, conditional_residual: L1Data,
 @@ -107,7 +128,7 @@
          return current_block_state
- 
+
  explicit: Block = ExplicitBlock("explicit")
 -wheel.add(explicit, role="signal")
 +wheel.add(explicit)
  """
- 
- 
+
+
 @@ -135,8 +156,11 @@
          'Incompatible types in assignment (expression has type "SampleOnly", '
          'variable has type "Block")'
@@ -3671,21 +3671,21 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
      assert 'has no attribute "NoiseOverwrittenWarning"' in out, out
      assert out.count("error:") == 5, out
 @@ -203,7 +227,7 @@
- 
- 
+
+
  def test_block_protocol_is_runtime_checkable():
 -    from enchilada import Block
 +    from enchilada import Block, BlockState
      from enchilada.testing import EchoBlock
- 
+
      assert isinstance(EchoBlock("e"), Block)
 @@ -221,7 +245,18 @@
- 
+
      assert not isinstance(SampleOnly(), Block)
- 
+
 +    class RoleLess:
 +        name = "r"
- 
+
 +        def initial_sample(self, conditional_residual, covariance, *, rng):
 +            return BlockState()
 +
@@ -3697,13 +3697,13 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +
  def test_frozen_dataclass_can_explicitly_inherit_block():
      from dataclasses import dataclass
- 
+
 @@ -232,6 +267,7 @@
      @dataclass(frozen=True)
      class ExplicitBlock(Block):
          name: str
 +        role = "signal"
- 
+
          def initial_sample(self, conditional_residual, covariance, *, rng):
              return BlockState(parameters={"value": 1})
 @@ -248,8 +284,8 @@
@@ -3716,7 +3716,7 @@ Save the patch below to `$TMPDIR/core-tests.patch` (a heredoc with a quoted deli
 +    wheel.add(block)
      wheel.run(1)
      assert wheel.ledger["explicit"].parameters == {"value": 1}
- 
+
 --- a/tests/test_fixed_noise.py
 +++ b/tests/test_fixed_noise.py
 @@ -14,6 +14,8 @@
@@ -3793,7 +3793,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -1,15 +1,23 @@
 -"""Wheel: the block-state ledger, the data-minus-others handoff, and its guards."""
 +"""Wheel: the block-state ledger, the data-minus-others handoff, and its guards.
- 
+
 +Every campaign here lives on an 8-row WDM home grid while the observations
 +arrive on the time grid, so the public views (residuals, contributions, the
 +covariance translated back) come back through one exact inverse transform and
@@ -3801,25 +3801,25 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +"""
 +
  from dataclasses import dataclass, field, replace
- 
+
  import numpy as np
  import pytest
- 
+
  from conftest import const_block_state, make_observed, starting_at, white_covariance
 -from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel
 +from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel, transform
  from enchilada.testing import EchoBlock
- 
+
 +CLOSE = {"rtol": 1e-12, "atol": 1e-12}
- 
+
 +
  class ConstBlock:
      """Returns a block state with the same signal value in every sample.
- 
+
 @@ -18,6 +26,8 @@
      template, so its ledger entry carries that constant signal.
      """
- 
+
 +    role = "signal"
 +
      @dataclass
@@ -3828,7 +3828,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -47,6 +57,8 @@
  class LevelNoiseBlock:
      """A covariance level driven by a sampling-call counter."""
- 
+
 +    role = "noise"
 +
      @dataclass
@@ -3850,7 +3850,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          full = wheel.residual()
          for ch in obs.channel_names:
 @@ -83,10 +95,10 @@
- 
+
      def test_exclude_leaves_that_block_in(self, rng):
          obs = make_observed(rng)
 -        wheel = Wheel(obs)
@@ -3865,7 +3865,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          # residual(exclude_block_name=b) = data minus a and c (110), b left in
          seen = wheel.residual(exclude_block_name="b")
 @@ -97,8 +109,8 @@
- 
+
      def test_contribution_is_the_returned_signal_template(self, rng):
          obs = make_observed(rng)
 -        wheel = Wheel(obs)
@@ -3877,16 +3877,16 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
              np.testing.assert_allclose(wheel.contribution(block_name="a")[ch], 7.0)
 @@ -110,6 +122,7 @@
          obs = make_observed(rng)
- 
+
          class InPlace:
 +            role = "signal"
              name = "ip"
- 
+
              def initial_sample(self, conditional_residual, covariance, *, rng):
 @@ -131,8 +144,8 @@
                      conditional_residual.channel_data
                  )  # ...and claim them
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(InPlace(), role="signal")
 +        wheel = Wheel(obs, num_frequency_divisions=8)
@@ -3896,7 +3896,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
              np.testing.assert_allclose(wheel.contribution("ip")[ch], 3.0)
 @@ -141,8 +154,8 @@
              )
- 
+
      def test_unknown_exclude_or_contribution_rejected(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(ConstBlock("a", 1.0), role="signal")
@@ -3908,7 +3908,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -172,8 +185,8 @@
                      rng=rng,
                  )
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(Mutator("mut", 0.0), role="signal")
 +        wheel = Wheel(obs, num_frequency_divisions=8)
@@ -3929,7 +3929,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          accepted = wheel.ledger["a"]
 @@ -199,23 +212,23 @@
          assert block.value == 1.0
- 
+
      def test_zero_blocks_is_a_noop(self, observed):
 -        wheel = Wheel(observed)
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -3940,7 +3940,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +            np.testing.assert_allclose(
 +                wheel.residual().channel_data[ch], observed.channel_data[ch], **CLOSE
              )
- 
+
      def test_run_rejects_bad_turn_counts(self, observed):
 -        wheel = Wheel(observed)
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -3948,19 +3948,19 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
              wheel.run(-1)
          with pytest.raises(ValueError, match="num_cycles"):
              wheel.run(True)  # bool is not a cycle count
- 
+
      def test_run_accepts_numpy_integers(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(ConstBlock("a", 1.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(ConstBlock("a", 1.0))
          wheel.run(np.int64(2))
- 
- 
+
+
 @@ -246,9 +259,9 @@
                      rng=rng,
                  )
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(Recorder("a", 2.0), role="signal")
 -        wheel.add(Recorder("b", 5.0), role="signal")
@@ -3973,7 +3973,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -277,9 +290,9 @@
                      ).template,
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Growing("a", 2.0), role="signal")
 -        wheel.add(Growing("b", 5.0), role="signal")
@@ -3986,7 +3986,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -311,34 +324,32 @@
                      rng=rng,
                  )
- 
+
 -        wheel = Wheel(observed)
 +        wheel = Wheel(observed, num_frequency_divisions=8)
          block = Recorder("rec", 2.0)
@@ -3998,7 +3998,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        np.testing.assert_allclose(wheel.contribution("rec")["A"], 2.0, **CLOSE)
          wheel.run(2)
          assert calls == ["initial_sample", "sample", "sample"]
- 
+
      def test_duplicate_name_rejected(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(EchoBlock(name="x"), role="signal")
@@ -4007,12 +4007,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          with pytest.raises(ValueError, match="already registered"):
 -            wheel.add(EchoBlock(name="x"), role="signal")
 +            wheel.add(EchoBlock(name="x"))
- 
+
      def test_empty_name_rejected(self, observed):
          with pytest.raises(ValueError, match="non-empty"):
 -            Wheel(observed).add(EchoBlock(name=""), role="signal")
 +            Wheel(observed, num_frequency_divisions=8).add(EchoBlock(name=""))
- 
+
      def test_invalid_start_leaves_wheel_untouched(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(ConstBlock("ok", 1.0), role="signal")
@@ -4031,37 +4031,37 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -359,8 +370,8 @@
              ):
                  return conditional_residual if return_input_data else {"A": np.zeros(1)}
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Bad("bad", 0.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(Bad("bad", 0.0))
          with pytest.raises(TypeError, match="bad.sample must return a BlockState"):
              wheel.run(1)
- 
+
 @@ -380,8 +391,8 @@
                      }
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Drifter("drift", 0.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(Drifter("drift", 0.0))
          with pytest.raises(ValueError, match="length 2, expected"):
              wheel.run(1)
- 
+
 @@ -399,24 +410,25 @@
                      template={"A": np.zeros(conditional_residual.num_time_samples)}
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Partial("partial", 0.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(Partial("partial", 0.0))
          with pytest.raises(ValueError, match="must match the run's channels"):
              wheel.run(1)
- 
- 
+
+
  class TestExplicitNoise:
      def test_covariance_refreshes_each_cycle(self, observed):
 -        wheel = Wheel(observed)
@@ -4075,7 +4075,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -        np.testing.assert_array_equal(wheel.covariance.A, 3.0)
 +        np.testing.assert_allclose(wheel.covariance.A, 3.0 / observed.fs, **CLOSE)
          np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 3.0)
- 
+
      def test_noise_block_contributes_zero_without_signal(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(LevelNoiseBlock("noise"), role="noise")
@@ -4087,7 +4087,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -435,11 +447,11 @@
                  seen["covariance"] = covariance
                  return super().initial_sample(conditional_residual, covariance, rng=rng)
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(LevelNoiseBlock("noise"), role="noise")
 -        wheel.add(Reader("rec", 1.0), role="signal")
@@ -4097,13 +4097,13 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          assert isinstance(seen["covariance"], Covariance)
 -        np.testing.assert_array_equal(seen["covariance"].A, 1.0)
 +        np.testing.assert_allclose(seen["covariance"].A, 1.0, **CLOSE)
- 
+
      def test_sample_sees_current_noise(self, observed):
          levels = []
 @@ -461,11 +473,11 @@
                      rng=rng,
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(LevelNoiseBlock("noise"), role="noise")  # samples first each cycle
 -        wheel.add(Recorder("rec", 0.0), role="signal")
@@ -4113,13 +4113,13 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          wheel.run(3)
 -        assert levels == [2.0, 3.0, 4.0]
 +        np.testing.assert_allclose(levels, [2.0, 3.0, 4.0], **CLOSE)
- 
+
      def test_copied_covariance_arrays_stay_read_only(self, observed):
          seen = []
 @@ -487,8 +499,8 @@
                      rng=rng,
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Inspector("noise"), role="noise")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -4153,11 +4153,11 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +            transform(wheel.covariance, "frequency").A, covariance.A, **CLOSE
 +        )
          assert wheel.ledger["noise"].template is None
- 
+
      def test_fixed_noise_block_republishes_each_cycle(self, observed):
 @@ -521,21 +540,21 @@
                  )
- 
+
          covariance = white_covariance(observed, 7.0)
 -        wheel = Wheel(observed_data=observed)
 -        wheel.add(FixedNoiseBlock("noise", covariance), role="noise")
@@ -4171,8 +4171,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -            np.testing.assert_array_equal(received, 7.0)
 +            np.testing.assert_allclose(received, 7.0, **CLOSE)
          np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 7.0)
- 
- 
+
+
  class TestOnCycle:
      def test_callback_called_per_turn_with_wheel(self, observed):
          calls = []
@@ -4196,46 +4196,46 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        wheel.add(ConstBlock("signal", 1.0))
          wheel.run(2)
          np.testing.assert_array_equal(wheel.covariance.A, expected)
- 
+
 @@ -574,8 +593,8 @@
                      }
                  )
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Blowup("boom", 0.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(Blowup("boom", 0.0))
          with pytest.raises(ValueError, match="non-finite sample"):
              wheel.run(1)
- 
+
 @@ -584,10 +603,11 @@
              name = "nosample"
- 
+
          with pytest.raises(TypeError, match="does not implement sample"):
 -            Wheel(observed).add(NoSample(), role="signal")
 +            Wheel(observed, num_frequency_divisions=8).add(NoSample())
- 
+
      def test_block_with_name_initial_sample_and_sample_can_register(self, observed):
          class Minimal:
 +            role = "signal"
              name = "minimal"
- 
+
              def initial_sample(self, conditional_residual, covariance, *, rng):
 @@ -603,8 +623,8 @@
              ):
                  return current_block_state
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Minimal(), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
 +        wheel.add(Minimal())
          wheel.run(1)
          assert list(wheel.ledger) == ["minimal"]
- 
+
 @@ -624,8 +644,8 @@
              ):
                  return conditional_residual.zero_block_state(parameters={"value": 0.0})
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(Death("rj", 1.0), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -4246,7 +4246,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -635,8 +655,8 @@
          # EchoBlock contributes a zero template on every sampling call
          import warnings as _w
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(EchoBlock("echo"), role="signal")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -4257,7 +4257,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -675,8 +695,8 @@
                      }
                  )
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(Wider("w", 0.0), role="signal")
 +        wheel = Wheel(obs, num_frequency_divisions=8)
@@ -4280,8 +4280,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      wheel.run(2)
 -    np.testing.assert_array_equal(wheel.residual().channel_data["A"], np.ones(64))
 +    np.testing.assert_allclose(wheel.residual().channel_data["A"], 1.0, **CLOSE)
- 
- 
+
+
 +def level_on(residual, value):
 +    """A time-constant template of `value`, expressed on `residual`'s grid."""
 +    zeros = replace(
@@ -4308,7 +4308,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      observed = make_observed(
          rng, channel_data={name: np.full(64, 100.0) for name in ("A", "E", "T")}
      )
- 
+
      class Changing(ConstBlock):
 +        def _block_state(self, residual):
 +            return level_on(residual, self.value)
@@ -4328,7 +4328,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -                {name: np.full(64, self.value + count) for name in ("A", "E", "T")},
 -            )
 +            return level_on(conditional_residual, self.value + count)
- 
+
 -    wheel = Wheel(observed)
 +    class Enormous:
 +        """A home-grid leaf at the largest float: finite alone, infinite in a sum."""
@@ -4377,12 +4377,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        60.0,
 +        **CLOSE,
      )
- 
- 
+
+
 @@ -752,10 +811,11 @@
                  }
              )
- 
+
 -    wheel = Wheel(observed)
 +    wheel = Wheel(observed, num_frequency_divisions=8)
      for index, value in enumerate((1e8, 1.0, -1e8)):
@@ -4391,8 +4391,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        wheel.add(NarrowSignal(str(index), value))
 +    # The leaves are translated in float64; the 1e8 pair cancels to its rounding.
 +    np.testing.assert_allclose(wheel.residual().channel_data["A"], 0.0, atol=1e-6)
- 
- 
+
+
  class TestDocumentedContracts:
 @@ -765,8 +825,8 @@
          """A new block starts from the observations minus the blocks registered
@@ -4403,12 +4403,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        wheel = Wheel(obs, num_frequency_divisions=8)
 +        wheel.add(ConstBlock("a", 1.0))
          seen = {}
- 
+
          class Reader(ConstBlock):
 @@ -774,7 +834,7 @@
                  seen["residual"] = conditional_residual
                  return super().initial_sample(conditional_residual, covariance, rng=rng)
- 
+
 -        wheel.add(Reader("b", 2.0), role="signal")
 +        wheel.add(Reader("b", 2.0))
          np.testing.assert_allclose(
@@ -4426,7 +4426,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        wheel.add(ConstBlock("a", 1.0))
          wheel.residual(exclude_block_name="a").channel_data["A"][0] = -999.0
          np.testing.assert_array_equal(obs.channel_data["A"], snapshot)
- 
+
      def test_contribution_returns_a_copy_of_the_ledger_entry(self, observed):
 -        wheel = Wheel(observed)
 -        wheel.add(ConstBlock("a", 2.0), role="signal")
@@ -4438,26 +4438,26 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -821,8 +881,8 @@
                  tdi[channel][3] = bad
                  return conditional_residual.block_state(tdi)
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(Blowup("b", 0.0), role="signal")
 +        wheel = Wheel(obs, num_frequency_divisions=8)
 +        wheel.add(Blowup("b", 0.0))
          with pytest.raises(ValueError, match="non-finite sample"):
              wheel.run(1)
- 
+
 @@ -839,6 +899,7 @@
              )
- 
+
          class PartlyZero:
 +            role = "signal"
              name = "p"
- 
+
              def initial_sample(self, conditional_residual, covariance, *, rng):
 @@ -854,8 +915,8 @@
              ):
                  return partly_zero_result(conditional_residual)
- 
+
 -        wheel = Wheel(obs)
 -        wheel.add(PartlyZero(), role="signal")
 +        wheel = Wheel(obs, num_frequency_divisions=8)
@@ -4471,17 +4471,17 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          with pytest.raises(ValueError, match="non-empty string"):
 -            Wheel(observed).add(block, role="signal")
 +            Wheel(observed, num_frequency_divisions=8).add(block)
- 
+
      def test_missing_name_gets_the_protocol_message(self, observed):
          class Anonymous:
 @@ -885,7 +946,7 @@
                  return conditional_residual.zero_block_state()
- 
+
          with pytest.raises((ValueError, TypeError), match="name"):
 -            Wheel(observed).add(Anonymous(), role="signal")
 +            Wheel(observed, num_frequency_divisions=8).add(Anonymous())
- 
- 
+
+
  class TestObservedDataIsChecked:
 @@ -898,7 +959,7 @@
          with pytest.raises(
@@ -4489,7 +4489,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          ):
 -            Wheel(obs)
 +            Wheel(obs, num_frequency_divisions=8)
- 
+
      def test_the_message_points_at_the_missing_gap_support(self, rng):
          """NaN is how a user marks a gap today, and gaps are not in the
 @@ -906,10 +967,10 @@
@@ -4498,11 +4498,11 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          with pytest.raises(ValueError, match="no data-quality mask"):
 -            Wheel(obs)
 +            Wheel(obs, num_frequency_divisions=8)
- 
+
      def test_finite_data_constructs_normally(self, observed):
 -        assert Wheel(observed).residual() is not None
 +        assert Wheel(observed, num_frequency_divisions=8).residual() is not None
- 
+
      def test_covariance_subclass_cannot_skip_grid_validation(self, observed):
          """Wheel and FixedNoiseBlock copy through Covariance's own methods, so
 @@ -930,13 +991,15 @@
@@ -4516,7 +4516,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +            wheel.add(FixedNoiseBlock("fixed", unchecked))
          assert len(wheel.ledger) == 0
          assert wheel.covariance is None
- 
+
          class PublishesUnchecked(EchoBlock):
 +            role = "noise"
 +
@@ -4526,7 +4526,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -947,12 +1010,12 @@
              ):
                  return BlockState(covariance=unchecked)
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(PublishesUnchecked("noise"), role="noise")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -4537,7 +4537,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -        np.testing.assert_array_equal(wheel.covariance.A, 1.0)
 +        assert wheel.covariance.A.shape == wheel.home_grid.channel_shape
 +        np.testing.assert_allclose(wheel.covariance.A, 1.0 / observed.fs, **CLOSE)
- 
+
          # On the right grid, validation passes; only the copy keeps the stored
          # object a plain Covariance rather than the caller's subclass.
 @@ -961,13 +1024,15 @@
@@ -4551,17 +4551,17 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
          assert type(wheel._noise_sum.total) is Covariance
          assert wheel._noise_sum.total is not compatible
          assert type(wheel.ledger["fixed"].covariance) is Covariance
- 
+
          class PublishesCompatible(EchoBlock):
 +            role = "noise"
 +
              def initial_sample(self, conditional_residual, covariance, *, rng):
                  return BlockState(covariance=compatible)
- 
+
 @@ -976,8 +1041,8 @@
              ):
                  return BlockState(covariance=compatible)
- 
+
 -        wheel = Wheel(observed)
 -        wheel.add(PublishesCompatible("noise"), role="noise")
 +        wheel = Wheel(observed, num_frequency_divisions=8)
@@ -4574,7 +4574,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 @@ -1,9 +1,9 @@
 -"""Wheel keeps accepted signals on its observation grid.
 +"""Wheel serves each block on its own grid from a WDM home grid.
- 
+
 -The noise sum lives on the grid of the first noise publication. A block
 -registered on that grid receives it; a noise block on another grid is refused
 -at add, and a signal block on another grid is refused at add or at the next
@@ -4584,12 +4584,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +translated onto the home grid for the sum, which every block receives translated
 +onto its own grid; a noise block must still publish on the grid it registered on.
  """
- 
+
  from dataclasses import dataclass, replace
 @@ -11,7 +11,7 @@
  import numpy as np
  import pytest
- 
+
 -from conftest import const_block_state, starting_at, white_covariance
 +from conftest import starting_at, white_covariance
  from enchilada import (
@@ -4597,8 +4597,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      Covariance,
 @@ -24,6 +24,12 @@
  from enchilada.testing import EchoBlock
- 
- 
+
+
 +class EchoNoise(EchoBlock):
 +    """An EchoBlock declaring the noise role; its start supplies the covariance."""
 +
@@ -4609,8 +4609,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      return L1Data(
          channel_data={name: np.full(64, 5.0) for name in ("A", "E")},
 @@ -49,6 +55,8 @@
- 
- 
+
+
  class ConstantSignal:
 +    role = "signal"
 +
@@ -4636,12 +4636,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      assert wheel.working_residual.data_domain == canonical_domain
      restored = transform(wheel.residual(), "time")
 @@ -123,6 +131,7 @@
- 
+
  def test_wdm_noise_publication_is_held_on_the_wdm_grid():
      class PixelNoise:
 +        role = "noise"
          name = "noise"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
 @@ -141,20 +150,19 @@
              wdm_data, {name: variances for name in data.channel_names}
@@ -4666,19 +4666,19 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -    assert wheel.covariance.grid == wdm_data.grid
 +    assert wheel.covariance.grid == wdm_data.grid == wheel.home_grid
      np.testing.assert_array_equal(wheel.covariance.A, variances)
- 
- 
+
+
 @@ -163,6 +171,7 @@
      fail = [True]
- 
+
      class RandomSignal:
 +        role = "signal"
          name = "random"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
 @@ -177,20 +186,17 @@
              return BlockState(parameters={"amplitude": value})
- 
+
      actual, expected = (
 -        Wheel(observations(), random_seed=7),
 -        Wheel(observations(), random_seed=7),
@@ -4711,18 +4711,18 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        observations().channel_data["A"],
 +        rtol=1e-12,
      )
- 
- 
+
+
  def test_invalid_domain_selection_does_not_register_or_sample():
      class NeverCalled:
 +        role = "signal"
          name = "unregistered"
- 
+
          def initial_sample(self, conditional_residual, covariance, *, rng):
 @@ -215,22 +224,22 @@
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
              raise AssertionError
- 
+
 -    wheel = Wheel(observations())
 +    wheel = Wheel(observations(), num_frequency_divisions=8)
      with pytest.raises(ValueError, match="data_domain|target_domain"):
@@ -4732,8 +4732,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -        wheel.add(NeverCalled(), role="signal", num_time_divisions=8)
 +        wheel.add(NeverCalled(), num_time_divisions=8)
      assert len(wheel.ledger) == 0
- 
- 
+
+
  def test_a_start_on_the_wrong_wdm_grid_is_refused(monkeypatch):
 -    # add transforms the residual to WDM before initial_sample runs; the wrong
 -    # template is then caught by the grid check inside transform, before any
@@ -4767,8 +4767,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        np.testing.assert_allclose(
 +            wheel.residual().channel_data[name], data.channel_data[name], rtol=1e-12
          )
- 
- 
+
+
 @@ -272,157 +281,29 @@
      for name in data.channel_names:
          data.channel_data[name] = np.zeros((8, 8))
@@ -4776,8 +4776,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -        Wheel(data)
 +        Wheel(data, num_frequency_divisions=8)
      assert data.wdm_grid is original_grid
- 
- 
+
+
  @pytest.mark.parametrize("domain", ["time", "frequency"])
  def test_explicit_domain_revalidates_mutated_start_arrays(domain):
      data = observations()
@@ -4792,8 +4792,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
              data_domain=domain,
          )
      assert len(wheel.ledger) == 0
- 
- 
+
+
 -@pytest.mark.parametrize("role", ["signal", "noise"])
 -def test_block_on_another_grid_than_the_covariance_is_refused_at_add(role):
 -    """The Wheel neither translates nor adds a covariance across grids: a block
@@ -4924,11 +4924,11 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 -
  def test_covariance_returned_on_another_grid_than_the_block_is_refused():
      """A noise block must publish on the grid of the data it received."""
- 
+
      class TimeNoiseFromFrequency:
 +        role = "noise"
          name = "frequency_noise"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
 @@ -439,10 +320,9 @@
      start = BlockState(
@@ -4961,18 +4961,18 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +    np.testing.assert_allclose(
 +        wheel.residual().channel_data["A"], data.channel_data["A"], rtol=1e-12
 +    )
- 
- 
+
+
 -def test_covariance_published_on_the_block_grid_is_held_there():
 +def test_covariance_published_on_the_block_grid_is_held_there_in_the_ledger():
      class FrequencyNoise:
 +        role = "noise"
          name = "frequency_noise"
- 
+
          def _publish(self, conditional_residual, level):
 @@ -485,18 +372,24 @@
              return self._publish(conditional_residual, 1.0 + abs(rng.normal()))
- 
+
      data = observations()
 -    wheel = Wheel(data, random_seed=3)
 -    wheel.add(FrequencyNoise(), role="noise", data_domain="frequency")
@@ -4991,8 +4991,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        transform(wheel.covariance, "frequency").A, level, rtol=1e-12
 +    )
      assert wheel.working_residual.data_domain == "time"
- 
- 
+
+
  @pytest.mark.parametrize("domain", ["frequency", "wdm"])
  def test_noise_only_start_on_the_block_grid_is_adopted_there(domain):
 -    """A start covariance is on the block's grid; the Wheel keeps it there."""
@@ -5022,8 +5022,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +    np.testing.assert_allclose(
 +        transform(wheel.covariance, domain, **options).A, variances, rtol=1e-12
 +    )
- 
- 
+
+
  @pytest.mark.parametrize("domain", ["frequency", "wdm"])
 @@ -524,11 +419,10 @@
      data = observations()
@@ -5052,7 +5052,7 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +        wheel.add(FixedNoiseBlock("noise", white_covariance(reordered, 1.0)))
      assert len(wheel.ledger) == 0
      assert wheel.covariance is None
- 
+
 @@ -552,10 +444,10 @@
      data = observations()
      reordered = replace(data, channel_names=("E", "A"))
@@ -5068,8 +5068,8 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
      assert wheel._block_domains == {}
 @@ -565,26 +457,23 @@
      assert wheel._rng.bit_generator.state == rng_before
- 
- 
+
+
 -def test_two_wdm_noise_blocks_add_on_the_wdm_grid():
 +def test_noise_blocks_on_several_grids_add_on_the_home_grid():
      data = observations()
@@ -5101,12 +5101,12 @@ It was generated against the files as they are on `wdm-home` at 5ef8d85 (identic
 +    total = 3.0 + 1.0 / data.fs
 +    np.testing.assert_allclose(wheel.covariance.A, total, rtol=1e-12)
      received: list[np.ndarray] = []
- 
+
      class WdmSignal(EchoBlock):
 @@ -595,9 +484,9 @@
                  conditional_residual, covariance, current_block_state, rng=rng
              )
- 
+
 -    wheel.add(WdmSignal("wdm_signal"), role="signal", data_domain="wdm", **options)
 +    wheel.add(WdmSignal("wdm_signal"), data_domain="wdm", **options)
      wheel.run(1)
@@ -5197,20 +5197,20 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +++ b/tests/test_state.py
 @@ -6,10 +6,11 @@
  import pytest
- 
+
  from conftest import starting_at, white_covariance
 -from enchilada import FixedNoiseBlock, Wheel
 +from enchilada import FixedNoiseBlock, Wheel, transform
- 
- 
+
+
  class Counter:
 +    role = "signal"
      name = "counter"
- 
+
      @dataclass
 @@ -29,9 +30,9 @@
- 
- 
+
+
  def test_ledger_carries_estimates_and_block_keeps_continuation(observed):
 -    wheel = Wheel(observed, random_seed=4)
 +    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=4)
@@ -5221,7 +5221,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      initial = wheel.ledger["counter"].parameters["a"]
      wheel.run(2)
 @@ -41,20 +42,22 @@
- 
+
  def test_pristine_working_and_input_are_independent(observed):
      original = observed.channel_data["A"].copy()
 -    wheel = Wheel(observed)
@@ -5234,8 +5234,8 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +    np.testing.assert_allclose(
 +        wheel.working_residual.channel_data["A"], original, rtol=1e-12, atol=1e-12
 +    )
- 
- 
+
+
  def test_block_state_parameters_are_copied_on_adoption_and_read(observed):
      initial = observed.zero_block_state(
          parameters={"a": 0.0, "amplitudes": [np.ones(2)]}
@@ -5250,7 +5250,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 @@ -81,17 +84,23 @@
                  )
              return result
- 
+
 -    actual, expected = Wheel(observed, random_seed=5), Wheel(observed, random_seed=5)
 +    actual, expected = (
 +        Wheel(observed, num_frequency_divisions=8, random_seed=5),
@@ -5277,7 +5277,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      actual.run(1)
      expected.run(1)
 @@ -100,9 +109,12 @@
- 
+
  def test_separate_blocks_keep_independent_campaign_continuation(observed):
      first, second = Counter(), Counter()
 -    one, two = Wheel(observed, random_seed=7), Wheel(observed, random_seed=7)
@@ -5295,7 +5295,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 @@ -122,9 +134,12 @@
                  conditional_residual, covariance, current_block_state, rng=rng
              )
- 
+
 -    actual, expected = Wheel(observed, random_seed=11), Wheel(observed, random_seed=11)
 -    actual.add(RetainsRng(), role="signal")
 -    expected.add(Counter(), role="signal")
@@ -5311,7 +5311,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 @@ -156,13 +171,16 @@
                  return result.with_covariance(white_covariance(conditional_residual, 1))
              return result
- 
+
 -    actual, expected = Wheel(observed, random_seed=12), Wheel(observed, random_seed=12)
 +    actual, expected = (
 +        Wheel(observed, num_frequency_divisions=8, random_seed=12),
@@ -5331,8 +5331,8 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      with pytest.raises(expected_error, match=message):
 @@ -175,12 +193,12 @@
      assert actual.ledger["counter"].parameters == expected.ledger["counter"].parameters
- 
- 
+
+
 -# "time" on time observations takes the Wheel's same-grid short-circuit.
 +# None and "time" both register the block on the arrival (time) grid.
  @pytest.mark.parametrize("data_domain", [None, "time"])
@@ -5348,15 +5348,15 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 @@ -193,17 +211,20 @@
              covariance.A[:] *= 4
              return current_block_state
- 
+
 -    wheel.add(EditsNoise(), role="signal", data_domain=data_domain)
 +    wheel.add(EditsNoise(), data_domain=data_domain)
      wheel.run(1)
 -    np.testing.assert_array_equal(wheel.covariance.A, 1)
 +    np.testing.assert_allclose(wheel.covariance.A, 1 / observed.fs, rtol=1e-12)
      np.testing.assert_array_equal(wheel.ledger["noise"].covariance.A, 1)
- 
- 
+
+
  def test_residual_overflow_is_rejected_before_registration(observed):
 +    # WDM observations are the home grid itself, so nothing is transformed and
 +    # the overflow happens in the subtraction, as this test means it to.
@@ -5369,7 +5369,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +            ch: np.full_like(x, 1e308) for ch, x in data.channel_data.items()
          },
      )
- 
+
 @@ -214,7 +235,6 @@
                  Counter(),
                  data.block_state({ch: -x for ch, x in data.channel_data.items()}),
@@ -5382,17 +5382,17 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +++ b/tests/test_block_state.py
 @@ -6,7 +6,7 @@
  import pytest
- 
+
  from conftest import const_block_state, make_observed, starting_at, white_covariance
 -from enchilada import BlockState, Wheel
 +from enchilada import BlockState, Wheel, transform
- 
- 
+
+
  def test_wdm_result_factory_accepts_a_full_grid_and_zero_factory_matches_grid(
 @@ -76,7 +76,9 @@
          observed.block_state(template=signal)
- 
- 
+
+
 -@pytest.mark.parametrize("num_time_samples", [1, 4, 5])
 +# A WDM home grid needs two even division counts, so an odd record (no Nyquist
 +# bin) cannot carry a Wheel; the frequency-grid factories above cover that case.
@@ -5407,14 +5407,14 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 -    if num_time_samples > 1:
 -        signal["A"][-1] = 2.0 if num_time_samples % 2 == 0 else 2.0 + 3j
 +    signal["A"][-1] = 2.0  # the Nyquist bin of an even record is real
- 
+
      class Signal:
 +        role = "signal"
          name = "signal"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
              return current_block_state
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(
 -        starting_at(Signal(), observed.block_state(template=signal)), role="signal"
@@ -5431,25 +5431,25 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +    np.testing.assert_allclose(
 +        wheel.working_residual.channel_data["A"], -signal["A"], rtol=1e-12, atol=1e-12
 +    )
- 
- 
+
+
  class NoiseOnly:
 +    role = "noise"
      name = "noise"
- 
+
      @dataclass
 @@ -133,6 +136,7 @@
- 
- 
+
+
  class SignalOnly:
 +    role = "signal"
      name = "signal"
- 
+
      @dataclass
 @@ -165,9 +169,10 @@
          )
- 
- 
+
+
 +# Even records only: a WDM home grid needs two even division counts.
  @pytest.mark.parametrize(
      "num_time_samples,index,endpoint",
@@ -5461,7 +5461,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 @@ -191,10 +196,13 @@
                  return replace(result, template=signal)
              return result
- 
+
 -    actual, expected = Wheel(observed, random_seed=8), Wheel(observed, random_seed=8)
 +    actual, expected = (
 +        Wheel(observed, num_frequency_divisions=2, random_seed=8),
@@ -5485,7 +5485,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +    np.testing.assert_allclose(
 +        actual.working_residual.channel_data["A"], -0.5, rtol=1e-12
 +    )
- 
+
      actual.run(1)
      expected.run(1)
 @@ -211,16 +221,18 @@
@@ -5496,8 +5496,8 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +    np.testing.assert_allclose(
 +        actual.working_residual.channel_data["A"], -1.0, rtol=1e-12
 +    )
- 
- 
+
+
  @pytest.mark.parametrize("domain", ["time", "frequency"])
  def test_noise_only_result_preserves_data_without_signal_arrays(observed, domain):
      if domain == "frequency":
@@ -5508,7 +5508,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 -    wheel.add(block, role="noise")
 +    wheel.add(block)
      wheel.run(2)
- 
+
      result = wheel.ledger["noise"]
 @@ -228,12 +240,19 @@
      assert result.parameters == {"variance": 3}
@@ -5535,16 +5535,16 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
          assert contribution[channel].dtype == samples.dtype
 @@ -257,6 +276,7 @@
          )
- 
+
      class Population:
 +        role = "signal"
          name = "population"
- 
+
          @dataclass
 @@ -279,10 +299,10 @@
                  return BlockState(parameters={"num_sources": 0})
              return population_start(conditional_residual)
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(NoiseOnly(), role="noise")
 +    wheel = Wheel(observed, num_frequency_divisions=8)
@@ -5569,17 +5569,17 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      assert wheel.ledger["population"].parameters == {"num_sources": 1}
      assert population.state.steps == 2
 @@ -302,6 +326,7 @@
- 
- 
+
+
  class Baseline:
 +    role = "signal"
      name = "baseline"
- 
+
      def sample(self, conditional_residual, covariance, current_block_state, *, rng):
 @@ -335,19 +360,18 @@
                  return replace(result, covariance=white_covariance(wrong_grid, 2))
              return result
- 
+
 -    actual, expected = Wheel(observed, random_seed=8), Wheel(observed, random_seed=8)
 +    actual, expected = (
 +        Wheel(observed, num_frequency_divisions=8, random_seed=8),
@@ -5637,22 +5637,22 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +++ b/tests/test_block_state_contract.py
 @@ -13,6 +13,7 @@
              raise AssertionError("Wheel must not copy resources owned by a block")
- 
+
      class StatefulSignal:
 +        role = "signal"
          name = "signal"
- 
+
          @dataclass
 @@ -38,8 +39,8 @@
              )
- 
+
      block = StatefulSignal()
 -    wheel = Wheel(observed, random_seed=42)
 -    wheel.add(block, role="signal")
 +    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=42)
 +    wheel.add(block)
      wheel.run(2)
- 
+
      accepted = wheel.ledger["signal"]
 @@ -48,7 +49,9 @@
      assert isinstance(block.state.metadata["resource"], LocalResource)
@@ -5674,16 +5674,16 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 --- a/tests/test_ledger.py
 +++ b/tests/test_ledger.py
 @@ -6,6 +6,7 @@
- 
- 
+
+
  class AmplitudeUpdate:
 +    role = "signal"
      name = "amplitudes"
- 
+
      def initial_sample(self, conditional_residual, covariance, *, rng):
 @@ -17,8 +18,8 @@
- 
- 
+
+
  def test_ledger_identity_is_reflexive_and_snapshots_are_stable(observed):
 -    wheel = Wheel(observed)
 -    wheel.add(AmplitudeUpdate(), role="signal")
@@ -5693,8 +5693,8 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      snapshot = wheel.ledger.snapshot()
      entry = snapshot["amplitudes"]
 @@ -33,7 +34,7 @@
- 
- 
+
+
  def test_empty_and_populated_snapshot_names_follow_registration(observed):
 -    wheel = Wheel(observed)
 +    wheel = Wheel(observed, num_frequency_divisions=8)
@@ -5706,17 +5706,17 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +++ b/tests/test_translation_review.py
 @@ -37,6 +37,8 @@
      received = []
- 
+
      class RecordInputs:
 +        role = "signal"
 +
          def __init__(self, name):
              self.name = name
- 
+
 @@ -49,21 +51,22 @@
              received.append(("sample", self.name, conditional_residual.data_domain))
              return current_block_state
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 2.0)), role="noise")
 -    wheel.add(RecordInputs("default"), role="signal")
@@ -5730,8 +5730,8 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      assert received == [("sample", "default", "time"), ("sample", "explicit", "time")]
 -    np.testing.assert_array_equal(wheel.covariance.A, 2.0)
 +    np.testing.assert_allclose(wheel.covariance.A, 2.0 / observed.fs, rtol=1e-12)
- 
- 
+
+
 -def test_same_grid_block_receives_the_covariance_without_transform(
 +def test_home_grid_block_receives_the_covariance_without_transform(
      observed, monkeypatch
@@ -5742,21 +5742,21 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +    goes through transform(). WDM observations make the arrival grid the home
 +    grid, so a default registration is on it too."""
      import enchilada.wheel
- 
+
      delegate = enchilada.wheel.transform
 @@ -77,20 +80,20 @@
      received = []
- 
+
      class RecordCovariance:
 +        role = "signal"
          name = "explicit"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
              covariance.check_compatible(conditional_residual)
 -            received.append(float(covariance.A[0]))
 +            received.append(float(covariance.A.flat[0]))
              return current_block_state
- 
+
 -    wheel = Wheel(observed)
 -    wheel.add(FixedNoiseBlock("noise", white_covariance(observed, 2.0)), role="noise")
 -    wheel.add(
@@ -5769,21 +5769,21 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
      wheel.run(2)
 -    assert received == [2.0, 2.0]
 +    assert received == [2.0 / observed.fs, 2.0 / observed.fs]
- 
- 
+
+
  @pytest.mark.parametrize("canonical_domain", ["time", "wdm"])
 @@ -105,6 +108,7 @@
      fail = [True]
- 
+
      class MutateInputs:
 +        role = "signal"
          name = "mutate"
- 
+
          def sample(self, conditional_residual, covariance, current_block_state, *, rng):
 @@ -122,8 +126,8 @@
                  parameters={"amplitude": amplitude, "coordinates": np.array([3.0])}
              )
- 
+
 -    actual = Wheel(canonical, random_seed=7)
 -    control = Wheel(canonical, random_seed=7)
 +    actual = Wheel(canonical, num_frequency_divisions=8, random_seed=7)
@@ -5824,7 +5824,7 @@ Generated against `wdm-home` at 5ef8d85 (identical to `main` at c669da8 for thes
 +        wheel.add(FixedNoiseBlock("noise", covariance))
          assert wheel.observed_data.channel_names == ("E", "A")
          assert reordered.to_frequency().to_time().channel_names == ("E", "A")
- 
+
 ```
 
 - [ ] **Step 3: Run the tests, ruff and the grep**
