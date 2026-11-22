@@ -13,6 +13,7 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
             raise AssertionError("Wheel must not copy resources owned by a block")
 
     class StatefulSignal:
+        role = "signal"
         name = "signal"
 
         @dataclass
@@ -38,8 +39,8 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
             )
 
     block = StatefulSignal()
-    wheel = Wheel(observed, random_seed=42)
-    wheel.add(block, role="signal")
+    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=42)
+    wheel.add(block)
     wheel.run(2)
 
     accepted = wheel.ledger["signal"]
@@ -48,7 +49,9 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
     assert isinstance(block.state.metadata["resource"], LocalResource)
     assert accepted.parameters == {"amplitude": 2.0}
     for name in observed.channel_names:
-        np.testing.assert_array_equal(accepted.template[name], 2.0)
+        # The ledger keeps the template on the home grid; the views are on the data's.
+        assert accepted.template[name].shape == wheel.home_grid.channel_shape
+        np.testing.assert_allclose(wheel.contribution("signal")[name], 2.0, rtol=1e-12)
         np.testing.assert_allclose(
             wheel.working_residual.channel_data[name], observed.channel_data[name] - 2.0
         )
@@ -57,4 +60,4 @@ def test_block_local_state_survives_calls_without_entering_the_ledger(observed):
     accepted.parameters["amplitude"] = 100.0
     accepted.template["A"][:] = 100.0
     assert wheel.ledger["signal"].parameters == {"amplitude": 2.0}
-    np.testing.assert_array_equal(wheel.contribution("signal")["A"], 2.0)
+    np.testing.assert_allclose(wheel.contribution("signal")["A"], 2.0, rtol=1e-12)

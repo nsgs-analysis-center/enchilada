@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from conftest import const_block_state, make_observed, starting_at, white_covariance
-from enchilada import BlockState, Wheel
+from enchilada import BlockState, Wheel, transform
 
 
 def test_wdm_result_factory_accepts_a_full_grid_and_zero_factory_matches_grid(
@@ -76,7 +76,9 @@ def test_result_factory_rejects_imaginary_rfft_endpoints(
         observed.block_state(template=signal)
 
 
-@pytest.mark.parametrize("num_time_samples", [1, 4, 5])
+# A WDM home grid needs two even division counts, so an odd record (no Nyquist
+# bin) cannot carry a Wheel; the frequency-grid factories above cover that case.
+@pytest.mark.parametrize("num_time_samples", [4, 8])
 def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_samples):
     observed = replace(
         observed,
@@ -85,27 +87,28 @@ def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_s
     ).to_frequency()
     signal = {ch: samples.copy() for ch, samples in observed.channel_data.items()}
     signal["A"][0] = 1.0
-    if num_time_samples > 1:
-        signal["A"][-1] = 2.0 if num_time_samples % 2 == 0 else 2.0 + 3j
+    signal["A"][-1] = 2.0  # the Nyquist bin of an even record is real
 
     class Signal:
+        role = "signal"
         name = "signal"
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
 
-    wheel = Wheel(observed)
-    wheel.add(
-        starting_at(Signal(), observed.block_state(template=signal)), role="signal"
-    )
+    wheel = Wheel(observed, num_frequency_divisions=2)
+    wheel.add(starting_at(Signal(), observed.block_state(template=signal)))
     wheel.run(1)
-    np.testing.assert_array_equal(wheel.contribution("signal")["A"], signal["A"])
-    np.testing.assert_array_equal(
-        wheel.working_residual.channel_data["A"], -signal["A"]
+    np.testing.assert_allclose(
+        wheel.contribution("signal")["A"], signal["A"], rtol=1e-12, atol=1e-12
+    )
+    np.testing.assert_allclose(
+        wheel.working_residual.channel_data["A"], -signal["A"], rtol=1e-12, atol=1e-12
     )
 
 
 class NoiseOnly:
+    role = "noise"
     name = "noise"
 
     @dataclass
@@ -133,6 +136,7 @@ class NoiseOnly:
 
 
 class SignalOnly:
+    role = "signal"
     name = "signal"
 
     @dataclass
@@ -165,9 +169,10 @@ class SignalOnly:
         )
 
 
+# Even records only: a WDM home grid needs two even division counts.
 @pytest.mark.parametrize(
     "num_time_samples,index,endpoint",
-    [(1, 0, "DC"), (4, 0, "DC"), (4, -1, "Nyquist"), (5, 0, "DC")],
+    [(4, 0, "DC"), (4, -1, "Nyquist"), (8, 0, "DC")],
 )
 def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
     observed, num_time_samples, index, endpoint
@@ -191,10 +196,13 @@ def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
                 return replace(result, template=signal)
             return result
 
-    actual, expected = Wheel(observed, random_seed=8), Wheel(observed, random_seed=8)
+    actual, expected = (
+        Wheel(observed, num_frequency_divisions=2, random_seed=8),
+        Wheel(observed, num_frequency_divisions=2, random_seed=8),
+    )
     actual_block, expected_block = InvalidOnce(), SignalOnly()
-    actual.add(actual_block, role="signal")
-    expected.add(expected_block, role="signal")
+    actual.add(actual_block)
+    expected.add(expected_block)
     with pytest.raises(ValueError, match=rf"{endpoint}.*real"):
         actual.run(1)
     assert actual_block.state.steps == 1
@@ -202,8 +210,10 @@ def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
     assert actual.ledger["signal"].parameters == expected.ledger["signal"].parameters
     assert actual.ledger["signal"].parameters == {"amplitude": 0.5}
     assert actual.covariance is None
-    np.testing.assert_array_equal(actual.contribution("signal")["A"], 0.5)
-    np.testing.assert_array_equal(actual.working_residual.channel_data["A"], -0.5)
+    np.testing.assert_allclose(actual.contribution("signal")["A"], 0.5, rtol=1e-12)
+    np.testing.assert_allclose(
+        actual.working_residual.channel_data["A"], -0.5, rtol=1e-12
+    )
 
     actual.run(1)
     expected.run(1)
@@ -211,16 +221,18 @@ def test_rejected_rfft_signal_preserves_estimates_state_and_rng(
     assert expected_block.state.steps == 1
     assert actual_block.state.draw == expected_block.state.draw
     assert actual.ledger["signal"].parameters == expected.ledger["signal"].parameters
-    np.testing.assert_array_equal(actual.working_residual.channel_data["A"], -1.0)
+    np.testing.assert_allclose(
+        actual.working_residual.channel_data["A"], -1.0, rtol=1e-12
+    )
 
 
 @pytest.mark.parametrize("domain", ["time", "frequency"])
 def test_noise_only_result_preserves_data_without_signal_arrays(observed, domain):
     if domain == "frequency":
         observed = observed.to_frequency()
-    wheel = Wheel(observed, random_seed=3)
+    wheel = Wheel(observed, num_frequency_divisions=8, random_seed=3)
     block = NoiseOnly()
-    wheel.add(block, role="noise")
+    wheel.add(block)
     wheel.run(2)
 
     result = wheel.ledger["noise"]
@@ -228,12 +240,19 @@ def test_noise_only_result_preserves_data_without_signal_arrays(observed, domain
     assert result.parameters == {"variance": 3}
     assert block.state.steps == 2
     np.testing.assert_array_equal(result.covariance.A, white_covariance(observed, 3).A)
-    np.testing.assert_array_equal(wheel.covariance.A, white_covariance(observed, 3).A)
+    np.testing.assert_allclose(
+        transform(wheel.covariance, domain).A,
+        white_covariance(observed, 3).A,
+        rtol=1e-12,
+    )
     contribution = wheel.contribution("noise")
     assert set(contribution) == set(observed.channel_names)
     for channel, samples in observed.channel_data.items():
-        np.testing.assert_array_equal(
-            wheel.working_residual.channel_data[channel], samples
+        np.testing.assert_allclose(
+            wheel.working_residual.channel_data[channel],
+            samples,
+            rtol=1e-12,
+            atol=1e-12,
         )
         np.testing.assert_array_equal(contribution[channel], np.zeros_like(samples))
         assert contribution[channel].dtype == samples.dtype
@@ -257,6 +276,7 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
         )
 
     class Population:
+        role = "signal"
         name = "population"
 
         @dataclass
@@ -279,10 +299,10 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
                 return BlockState(parameters={"num_sources": 0})
             return population_start(conditional_residual)
 
-    wheel = Wheel(observed)
-    wheel.add(NoiseOnly(), role="noise")
+    wheel = Wheel(observed, num_frequency_divisions=8)
+    wheel.add(NoiseOnly())
     population = Population()
-    wheel.add(population, role="signal")
+    wheel.add(population)
     np.testing.assert_allclose(
         wheel.working_residual.channel_data["A"], observed.channel_data["A"] - 0.25
     )
@@ -292,7 +312,11 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
     np.testing.assert_allclose(
         wheel.working_residual.channel_data["A"], observed.channel_data["A"]
     )
-    np.testing.assert_array_equal(wheel.covariance.A, white_covariance(observed, 2).A)
+    np.testing.assert_allclose(
+        transform(wheel.covariance, observed.data_domain).A,
+        white_covariance(observed, 2).A,
+        rtol=1e-12,
+    )
     wheel.run(1)
     assert wheel.ledger["population"].parameters == {"num_sources": 1}
     assert population.state.steps == 2
@@ -302,6 +326,7 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
 
 
 class Baseline:
+    role = "signal"
     name = "baseline"
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -335,19 +360,18 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
                 return replace(result, covariance=white_covariance(wrong_grid, 2))
             return result
 
-    actual, expected = Wheel(observed, random_seed=8), Wheel(observed, random_seed=8)
+    actual, expected = (
+        Wheel(observed, num_frequency_divisions=8, random_seed=8),
+        Wheel(observed, num_frequency_divisions=8, random_seed=8),
+    )
     actual_block, expected_block = FailsOnce(), NoiseOnly()
     for wheel, block in ((actual, actual_block), (expected, expected_block)):
         # A constant signal gives the residual a non-zero baseline to preserve.
-        wheel.add(
-            starting_at(Baseline(), const_block_state(observed, 0.5)), role="signal"
-        )
-        wheel.add(block, role="noise")
+        wheel.add(starting_at(Baseline(), const_block_state(observed, 0.5)))
+        wheel.add(block)
     error = {
-        "omitted": (
-            "must return a covariance because 'noise' is registered as a noise block"
-        ),
-        "template": "returned a template but 'noise' is registered as a noise block",
+        "omitted": "must return a covariance because 'noise' declares role 'noise'",
+        "template": "returned a template but 'noise' declares role 'noise'",
         "wrong_grid": "grid",
     }[failure]
     with pytest.raises(ValueError, match=error):
@@ -355,9 +379,13 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
     assert actual_block.state.steps == 1
     assert expected_block.state.steps == 0
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
-    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 1).A)
+    np.testing.assert_allclose(
+        transform(actual.covariance, "time").A,
+        white_covariance(observed, 1).A,
+        rtol=1e-12,
+    )
     np.testing.assert_array_equal(actual.contribution("noise")["A"], 0.0)
-    np.testing.assert_array_equal(actual.contribution("baseline")["A"], 0.5)
+    np.testing.assert_allclose(actual.contribution("baseline")["A"], 0.5, rtol=1e-12)
     np.testing.assert_allclose(
         actual.working_residual.channel_data["A"], observed.channel_data["A"] - 0.5
     )
@@ -368,7 +396,11 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
     assert actual_block.state.draw == expected_block.state.draw
     assert actual.ledger["noise"].parameters == expected.ledger["noise"].parameters
     assert actual.ledger["noise"].template is None
-    np.testing.assert_array_equal(actual.covariance.A, white_covariance(observed, 2).A)
+    np.testing.assert_allclose(
+        transform(actual.covariance, "time").A,
+        white_covariance(observed, 2).A,
+        rtol=1e-12,
+    )
     np.testing.assert_allclose(
         actual.working_residual.channel_data["A"], observed.channel_data["A"] - 0.5
     )
