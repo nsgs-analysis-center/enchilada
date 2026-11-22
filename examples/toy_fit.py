@@ -7,12 +7,11 @@ at registration; an on_cycle_complete callback collects posterior chains outside
 the blocks. The sine blocks declare role = "signal" and the white-noise block
 role = "noise" (the one noise block), so the sines receive its covariance,
 translated onto their time grid (exact for white noise), and the noise block
-itself receives None because it is alone. These blocks request time-domain
-inputs; the campaign lives on a WDM home grid (64 rows x 64 columns for the
-4096 samples) and Wheel also runs them on Fourier or WDM observations with
-data_domain="time". Their likelihood requires time-domain noise with
-independent channels.
-Run with:
+itself receives None because it is alone. run_toy_fit keeps its campaign on a
+64 x 64 WDM home grid for the 4096 samples. On Fourier observations pass a
+division count to Wheel; WDM observations bring their own grid. Either way the
+blocks keep data_domain="time" throughout: their likelihood requires
+time-domain noise with independent channels. Run with:
 
     uv run --no-sync python examples/toy_fit.py
 """

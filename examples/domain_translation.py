@@ -109,7 +109,7 @@ def run_example():
         ),
         "result_parameters": restored_signal.parameters,
         "block_domains": [block.state.input_domain for block in blocks.values()],
-        "canonical_domain": wheel.working_residual.data_domain,
+        "arrival_domain": wheel.working_residual.data_domain,
         "residual_max_error": maximum_error(
             observed.channel_data, wheel.working_residual.channel_data
         ),

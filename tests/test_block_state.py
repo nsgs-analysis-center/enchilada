@@ -93,7 +93,7 @@ def test_result_factory_accepts_complex_last_bin_on_odd_records(
 
 
 # A WDM home grid needs two even division counts, so an odd record (no Nyquist
-# bin) cannot carry a Wheel; the factory tests above and below cover odd records.
+# bin) cannot carry a Wheel; the factory tests above cover odd records.
 @pytest.mark.parametrize("num_time_samples", [4, 8])
 def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_samples):
     observed = replace(

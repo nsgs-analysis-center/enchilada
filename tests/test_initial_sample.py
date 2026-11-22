@@ -181,7 +181,7 @@ def test_initial_sample_consumes_the_campaign_rng_reproducibly(observed):
 
 
 @pytest.mark.parametrize(
-    ("canonical_domain", "block_domain"),
+    ("arrival_domain", "block_domain"),
     [
         ("time", None),
         ("frequency", "time"),
@@ -191,29 +191,25 @@ def test_initial_sample_consumes_the_campaign_rng_reproducibly(observed):
     ],
 )
 def test_initial_sample_receives_inputs_on_the_selected_grid_and_round_trips(
-    observed, canonical_domain, block_domain
+    observed, arrival_domain, block_domain
 ):
-    canonical_options = (
-        {"num_frequency_divisions": 8} if canonical_domain == "wdm" else {}
-    )
-    canonical = transform(observed, canonical_domain, **canonical_options)
+    arrival_options = {"num_frequency_divisions": 8} if arrival_domain == "wdm" else {}
+    arrival = transform(observed, arrival_domain, **arrival_options)
     block_options = {"num_time_divisions": 4} if block_domain == "wdm" else {}
-    wheel = Wheel(canonical, num_frequency_divisions=8, random_seed=23)
+    wheel = Wheel(arrival, num_frequency_divisions=8, random_seed=23)
     block = StartingBlock()
     wheel.add(block, data_domain=block_domain, **block_options)
     residual, _, _ = block.state.starts[0]
-    assert residual.data_domain == (block_domain or canonical_domain)
+    assert residual.data_domain == (block_domain or arrival_domain)
     if block_domain == "wdm":
         assert residual.wdm_grid.num_time_divisions == 4
     np.testing.assert_allclose(transform(residual, "time").channel_data["A"], 5.0)
     assert block.state.counter == 0
     np.testing.assert_allclose(transform(wheel.residual(), "time").channel_data["A"], 3)
     np.testing.assert_array_equal(
-        wheel.observed_data.channel_data["A"], canonical.channel_data["A"]
+        wheel.observed_data.channel_data["A"], arrival.channel_data["A"]
     )
-    assert (
-        wheel.contribution("starting")["A"].shape == canonical.channel_data["A"].shape
-    )
+    assert wheel.contribution("starting")["A"].shape == arrival.channel_data["A"].shape
     wheel.run(1)
     assert block.state.counter == 1
     assert block.state.draw == np.random.default_rng(23).normal()

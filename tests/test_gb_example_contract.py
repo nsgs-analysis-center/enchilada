@@ -141,8 +141,8 @@ def test_gb_frequency_registration_reads_the_home_grid_noise_on_its_frequency_gr
     class ContextProbe:
         """Check the GB likelihood inputs without requiring optional Eryn."""
 
-        name = block.name
         role = "signal"
+        name = block.name
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             seen_psds.append(block._context(conditional_residual, covariance)[1]["A"])

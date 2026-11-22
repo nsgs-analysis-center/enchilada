@@ -16,7 +16,7 @@ class BlockState:
     `template` is the sum of this block's modeled signals in each
     TDI channel. None means zero contribution, removing any previous signal.
     Explicit arrays must cover every channel on the block's input grid.
-    Wheel translates them to the observation grid when storing the ledger.
+    Wheel transforms them onto its home grid when storing the ledger.
 
     `parameters` holds the physical values used to produce the template and
     covariance. Values must support deepcopy: Wheel snapshots them on adoption

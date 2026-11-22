@@ -141,6 +141,7 @@ class GBBlock:
     """
 
     role = "signal"
+
     SUPPORTED_CHANNELS = ("A", "E")
     PARAMETER_NAMES = ("amp", "f0", "fdot", "phi0")
 
@@ -260,12 +261,12 @@ class GBBlock:
     ) -> BlockState:
         """Initialize block-owned walkers and publish the first walker's signal.
 
-        Wheel calls this once at registration. It requires the campaign covariance
-        already in place on the frequency data grid: register a noise block there
-        first (for a known PSD, a ``FixedNoiseBlock``, which declares
-        ``role = "noise"``, with ``data_domain="frequency"``). It resets
-        ``self.state``, so a fresh block instance belongs to each independent
-        campaign.
+        Wheel calls this once at registration. It requires a campaign
+        covariance: the noise sum lives on the home grid and this block
+        receives it translated onto its frequency grid, so register a noise
+        block first (for a known PSD, a ``FixedNoiseBlock``, which declares
+        ``role = "noise"``). It resets ``self.state``, so a fresh block
+        instance belongs to each independent campaign.
         """
         gb, _ = self._context(conditional_residual, covariance)
         bounds = np.asarray(self.bounds)

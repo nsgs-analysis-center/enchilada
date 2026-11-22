@@ -18,13 +18,11 @@ def toy():
     return module
 
 
-@pytest.mark.parametrize("canonical_domain", ["frequency", "wdm"])
-def test_toy_time_blocks_preserve_draws_on_translated_observations(
-    toy, canonical_domain
-):
+@pytest.mark.parametrize("arrival_domain", ["frequency", "wdm"])
+def test_toy_time_blocks_preserve_draws_on_translated_observations(toy, arrival_domain):
     data = toy.make_observed()
-    options = {"num_frequency_divisions": 8} if canonical_domain == "wdm" else {}
-    translated_data = transform(data, canonical_domain, **options)
+    options = {"num_frequency_divisions": 8} if arrival_domain == "wdm" else {}
+    translated_data = transform(data, arrival_domain, **options)
     chains = []
     wheels = []
     for observed in (data, translated_data):

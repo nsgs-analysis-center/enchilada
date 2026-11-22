@@ -12,10 +12,12 @@ own.
 The likelihood is a Gaussian likelihood of time-domain data with independent
 channels: each time sample is an independent real Gaussian whose variance is in
 per-sample units, and cross-channel terms are not modelled. On Fourier or WDM
-observations both blocks must therefore be registered with data_domain="time",
-and the floor built on that time grid. One excess variance is shared across all
-channels. ExcessNoiseBlock refuses a None floor, so it must be registered after
-another noise block. Run with:
+observations the excess block must therefore be registered with
+data_domain="time"; the floor may be published on any grid, since Wheel
+translates it onto the home grid and hands it to the excess block translated
+onto that time grid (exact for a white floor). One excess variance is shared
+across all channels. ExcessNoiseBlock refuses a None floor, so it must be
+registered after another noise block. Run with:
 
     uv run --no-sync python examples/noise_floor.py
 """
@@ -42,8 +44,9 @@ class ExcessNoiseBlock:
     per-sample units, and cross-channel terms are not modelled (a floor with
     cross-channel terms is refused). One excess variance is shared across all
     channels. On Fourier or WDM observations register the block with
-    `data_domain="time"` and build the floor on that time grid. The block
-    refuses a `None` floor, so register it after another noise block.
+    `data_domain="time"`; the floor may be published on any grid and reaches
+    this block translated onto its time grid. The block refuses a `None`
+    floor, so register it after another noise block.
     """
 
     role = "noise"

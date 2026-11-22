@@ -5,12 +5,10 @@ Use --samples, --rows and --blocks to explore a different workload. Timings
 include defensive snapshots and validation; these are measurements, not test
 thresholds. The workload is the fixed signals plus one FixedNoiseBlock, which
 republishes its covariance every cycle and is revalidated by Wheel each time, so
-timings are not comparable with runs from before the noise sum or the home grid
-(time-grid blocks pay a transform per call and a covariance translation per
-block). The campaign
-lives on a WDM home grid of --rows rows; every block here works on the time grid
-the data arrive on, so each cycle pays the data transforms and the covariance
-translation between that grid and the home grid.
+timings are not comparable with runs from before the noise sum or the home grid.
+The campaign lives on a WDM home grid of --rows rows; every block here works on
+the time grid the data arrive on, so each cycle pays the data transforms and the
+covariance translation between that grid and the home grid.
 """
 
 import argparse
@@ -93,7 +91,8 @@ if __name__ == "__main__":
     parser.add_argument("--repeats", type=int, default=3)
     arguments = parser.parse_args()
     if not (
-        arguments.rows > 0
+        arguments.samples > 0
+        and arguments.rows > 0
         and arguments.rows % 2 == 0
         and arguments.samples % (2 * arguments.rows) == 0
     ):

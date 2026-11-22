@@ -168,10 +168,9 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
     ``source`` and ``target`` share the record (sample count and rate) and
     differ in domain or WDM grid. Results are ``float64`` on every target; a
     complex cross term entering the translation keeps its real part (the mean
-    power of the pair). When the target WDM grid has
-    fewer columns than the source, each target column reads one source column,
-    so power confined to a skipped source column is not carried (a recorded
-    design choice).
+    power of the pair). When the target WDM grid has fewer columns than the
+    source, each target column reads one source column, so power confined to a
+    skipped source column is not carried (a recorded design choice).
     """
     if source == target or not source.same_record(target):
         raise ValueError(

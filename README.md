@@ -13,7 +13,9 @@ many separately-owned pieces.
 A `Wheel` owns pristine L1 observations, a working residual, the sum of the
 noise blocks' covariances, and a `Ledger` containing each block's accepted
 `BlockState`: an optional signal template, an optional covariance, and physical
-parameters. Every block is registered as a signal block or a noise block.
+parameters. The campaign lives on one WDM grid chosen at construction, its
+*home grid*; every block is served on the grid it asks for. Every block declares
+its role, `"signal"` or `"noise"`, as an attribute.
 Each block owns its sampler continuation state and diagnostics. The Wheel supplies
 the data minus all other blocks' signals, the covariance the block's role
 receives, and the block's accepted physical state, then validates and records
@@ -95,9 +97,11 @@ observed = L1Data(
 ucb = EchoBlock(name="ucb")
 mbhb = EchoBlock(name="mbhb")
 
-wheel = Wheel(observed_data=observed)
-wheel.add(block_to_register=ucb, role="signal")
-wheel.add(block_to_register=mbhb, role="signal")
+# The campaign lives on a WDM home grid: 32 rows x 32 columns for 1024 samples.
+# EchoBlock declares role = "signal"; Wheel reads the attribute at add.
+wheel = Wheel(observed_data=observed, num_frequency_divisions=32)
+wheel.add(block_to_register=ucb)
+wheel.add(block_to_register=mbhb)
 wheel.run(num_cycles=3)
 
 wheel.residual()  # the running residual: observed minus every block's template
@@ -160,6 +164,8 @@ native GBGPU runtime validation. Its outputs are not committed; run it to popula
 Implement the `Block` protocol:
 
 - `name`: unique within a Wheel.
+- `role`: `"signal"` or `"noise"`, declared on the block (a class attribute
+  such as `role = "signal"`); `Wheel.add` reads it once.
 - `initial_sample(conditional_residual, covariance, *, rng) -> BlockState`:
   draw or construct the block's start from the data minus the starts of the
   blocks registered before it; `Wheel.add` calls it once at registration.
@@ -230,31 +236,31 @@ Published parameters must support deep copying. Keep open files, processes, GPU
 resources, and sampler history on the block or in an external sink, outside
 `BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
 
-Every block is registered under a role, `role="signal"` or `role="noise"`,
-and draws or constructs its own start. `Wheel.add` calls the block's
-`initial_sample` once with the observations minus the adopted starts of the
-blocks registered before it, on the block's grid, together with the covariance
-its role receives (`None` while the noise sum is empty) and the campaign RNG,
-then validates and adopts the returned state exactly like a `sample` return.
-For a known injection, make the start block configuration:
+Every block declares its role, `role = "signal"` or `role = "noise"`, as a
+class attribute, and draws or constructs its own start. `Wheel.add` calls the
+block's `initial_sample` once with the observations minus the adopted starts
+of the blocks registered before it, on the block's grid, together with the
+covariance its role receives (`None` while the noise sum is empty) and the
+campaign RNG, then validates and adopts the returned state exactly like a
+`sample` return. For a known injection, make the start block configuration:
 
 ```python
 signal_block = SineAmplitudeBlock(
     name="signal", frequency_hz=0.004, start_amplitude=injected_amplitude
 )
-wheel.add(block_to_register=signal_block, role="signal", data_domain="time")
+wheel.add(block_to_register=signal_block, data_domain="time")
 ```
 
 A block whose start is not configured draws it from its prior with the `rng`
 it is handed, so a seeded campaign reproduces its starts as well as its
 chains; registration consumes the campaign RNG only when `initial_sample`
-draws from it. The Block protocol requires `name`, `initial_sample` and
-`sample`. The [Block authoring tutorial](examples/create_block.ipynb) shows a
-complete example. Return signal arrays on the block's requested domain and
-WDM grid, or the observation grid if no domain is selected; Wheel converts
-them to the observation grid for storage. A noise block's start carries its
-covariance on the block's own grid, like a template, and enters the noise sum
-there (see
+draws from it. The Block protocol requires `name`, `role`, `initial_sample`
+and `sample`. The [Block authoring tutorial](examples/create_block.ipynb) shows
+a complete example. Return signal arrays on the block's requested domain and
+WDM grid, or the observations' own grid if no domain is selected; Wheel
+transforms them onto its home grid for storage. A noise block's start carries
+its covariance on the block's own grid, like a template; the ledger keeps it
+there and the noise sum receives its translation (see
 [Time, frequency, and WDM translation](#time-frequency-and-wdm-translation)).
 Blocks start in registration order: register the noise blocks before the
 blocks whose starts need their covariance.
@@ -281,8 +287,8 @@ from enchilada import Covariance, FixedNoiseBlock, Wheel
 noise = Covariance.like(
     observed, {ch: np.full(observed.N, 0.25) for ch in observed.channel_names}
 )
-wheel = Wheel(observed_data=observed, random_seed=42)
-wheel.add(FixedNoiseBlock("instrument", noise), role="noise")
+wheel = Wheel(observed_data=observed, num_frequency_divisions=32, random_seed=42)
+wheel.add(FixedNoiseBlock("instrument", noise))
 ```
 
 A campaign has no covariance until a noise block publishes one at
@@ -308,8 +314,8 @@ its covariance with
 `Covariance.like(spectrum, {ch: spectrum.Tobs / 2 * model.psd(f) for ch in spectrum.channel_names})`
 and reads a channel's bin variances back with `noise.pair("A", "A")`.
 
-Signal blocks and noise blocks implement the same `Block` protocol; the role
-given at `Wheel.add` says which one a block is. A noise block publishes its
+Signal blocks and noise blocks implement the same `Block` protocol; the block's
+`role` attribute says which one it is. A noise block publishes its
 covariance directly, with no signal arrays:
 
 ```python
@@ -368,27 +374,35 @@ The object carries its grid: `noise.grid` is a `Grid` (domain, sample count,
 sample rate and WDM grid), the same value as `observed.grid`.
 `noise.check_compatible(observed)` requires equal channel order and
 `observed.grid == noise.grid`. Wheel validates every covariance a noise block
-publishes and keeps the noise sum on the grid of the first publication; see
+publishes on the block's own grid, keeps it there in the ledger and translates
+it onto the home grid for the noise sum; see
 [Time, frequency, and WDM translation](#time-frequency-and-wdm-translation).
 
 Wheel uses descriptive arguments at each entry point:
 
 | Entry point | Signature |
 | --- | --- |
-| Constructor | `Wheel(observed_data, *, random_seed=None)` |
-| Register a block | `add(block_to_register, *, role, data_domain=None, num_frequency_divisions=None, num_time_divisions=None)` |
+| Constructor | `Wheel(observed_data, *, num_frequency_divisions=None, num_time_divisions=None, random_seed=None)`; time or frequency observations need one count (the other is derived), WDM observations bring their grid |
+| Register a block | `add(block_to_register, *, data_domain=None, num_frequency_divisions=None, num_time_divisions=None)`; `None` serves the observations' own grid, `data_domain="wdm"` without counts the home grid |
 | Sample complete cycles | `run(num_cycles, on_cycle_complete=None)` |
 | Read a residual | `residual(exclude_block_name=None)` |
 | Read a block's signal | `contribution(block_name)` |
-| Check a block | `check_block(block_under_test, observed_data, num_cycles=2, *, role, noise_blocks=(), random_seed=0)` |
-| A known noise model | `FixedNoiseBlock(name, covariance)`, registered with `role="noise"` |
+| Check a block | `check_block(block_under_test, observed_data, num_cycles=2, *, noise_blocks=(), random_seed=0, num_frequency_divisions=None, num_time_divisions=None)` |
+| A known noise model | `FixedNoiseBlock(name, covariance)`, a block with `role = "noise"` |
 | Add two covariances | `noise_a + noise_b` (same grid and channel order) |
+| Translate a covariance | `transform(noise, target_domain, *, num_frequency_divisions=None, num_time_divisions=None)` (the diagonal spectral-model rule below) |
 
-Inspect `wheel.observed_data`, `wheel.working_residual`, `wheel.covariance`, and
-`wheel.ledger[name]`; each returns defensive copies of changing data. The orbit is
-a shared immutable resource. `wheel.contribution(block_name=name)` returns just the summed
-signal, including zero arrays for an omitted contribution, and
+Inspect `wheel.home_grid`, `wheel.observed_data`, `wheel.working_residual`,
+`wheel.covariance` (on the home grid), and `wheel.ledger[name]`; each returns
+defensive copies of changing data, and the residual views come back on the
+observations' own grid through one exact inverse transform. `wheel.home_grid`
+is a `Grid`; its `.wdm_grid` is the home `WDMGrid`. Ledger templates sit on
+the home grid while ledger covariances stay on their publication grid, so read
+a block's signal on the arrival grid through
+`wheel.contribution(block_name=name)`, which returns just the summed signal,
+including zero arrays for an omitted contribution;
 `wheel.residual(exclude_block_name=name)` gives that block's conditional data.
+The orbit is a shared immutable resource.
 Ledger supports `ledger[name]`, iteration over block names, membership checks, and
 `len(ledger)`. Use `ledger.snapshot()` for an independent dictionary of all current
 published states, including normal dictionary methods such as `items()`. A Ledger
@@ -420,22 +434,23 @@ check_block(
     block_under_test=MyBlock(name="ucb"),
     observed_data=toy_observed,
     num_cycles=2,
-    role="signal",
     noise_blocks=(FixedNoiseBlock("noise", toy_noise),),
     random_seed=0,
+    num_frequency_divisions=8,
 )
 ```
 
-This registers each block in `noise_blocks` with `role="noise"`, then the
-block under test with `role`, which calls its `initial_sample` on the grid of
-`observed_data`, then runs the requested number of sampling cycles, advancing
-the supplied blocks' own state. Construct `MyBlock` with whatever start it
-should render; `check_block` does not select a separate block domain. A signal
-block that needs a covariance gets it from the noise blocks; a noise block
-under test receives their sum as its `covariance`. The random seed configures
-the test campaign and also drives `initial_sample`; the defaults are shown
-above. Each model must independently validate its prior, likelihood, and
-sampler; see the conjugate example in `examples/toy_fit.py`.
+This builds a scratch Wheel on an 8-row home grid, registers each block in
+`noise_blocks` (each must declare `role = "noise"`), then the block under test,
+which calls its `initial_sample` on the grid of `observed_data`, then runs the
+requested number of sampling cycles, advancing the supplied blocks' own state.
+Construct `MyBlock` with whatever start it should render; `check_block` does
+not select a separate block domain. A signal block that needs a covariance
+gets it from the noise blocks; a noise block under test receives their sum as
+its `covariance`. The random seed configures the test campaign and also drives
+`initial_sample`; the defaults are shown above. Each model must independently
+validate its prior, likelihood, and sampler; see the conjugate example in
+`examples/toy_fit.py`.
 
 ### Forging a new block
 
@@ -471,8 +486,9 @@ step behind, at odd ones (`domania.wilson.grid.cells(Nf, Nt)` lists each
 slot's band and time). `L1Data` derives its read-only `wdm_grid` metadata from
 this coefficient layout. It is a frozen `WDMGrid` for WDM data and `None` for
 time or frequency data; copies preserve the grid. Choose division counts
-through `transform` or `Wheel.add(block, role=..., data_domain="wdm", ...)`,
-rather than passing `wdm_grid` to `L1Data`.
+through `transform`, `Wheel(observed, num_frequency_divisions=...)` for the home
+grid, or `Wheel.add(block, data_domain="wdm", ...)` for a block's grid, rather
+than passing `wdm_grid` to `L1Data`.
 
 Time/Fourier transforms are plain NumPy FFTs. WDM conversions go through
 [domania](https://pypi.org/project/domania/), a core dependency, so a plain
@@ -486,31 +502,79 @@ uv run --no-sync python examples/domain_translation.py
 Select a representation when registering a block:
 
 ```python
-wheel.add(frequency_block, role="signal", data_domain="frequency")
-wheel.add(wdm_block, role="signal", data_domain="wdm", num_frequency_divisions=8)
+wheel.add(frequency_block, data_domain="frequency")
+wheel.add(wdm_block, data_domain="wdm", num_frequency_divisions=8)
 ```
 
 Each block's `initial_sample` receives the residual on its selected domain and
-WDM grid and returns its start there. Wheel converts the conditional residual
-and previous signal into the selected representation, then converts returned
-outputs back to the canonical observation grid before atomic adoption. Omitting
-`data_domain` keeps the default handoff. To convert a standalone state
+WDM grid and returns its start there. Wheel forms the conditional residual on
+its home grid, transforms it and the block's previous signal onto the selected
+grid, and transforms a returned template back onto the home grid before atomic
+adoption. Omitting `data_domain` serves the block on the grid the observations
+arrived on; `data_domain="wdm"` without division counts is the home grid itself,
+the one choice that costs no transform. To convert a standalone state
 containing a template, supply its source grid:
 `transform(state, "wdm", num_frequency_divisions=8, reference_data=observed)`.
 Physical parameters are copied without reinterpretation; block-local sampler
 state does not pass through translation.
 
-A covariance does not translate between representations: it carries its grid,
-`transform` refuses one with `TypeError`, and `noise.copy()` makes an
-independent copy. A block state's covariance passes through `transform`
-unchanged. Wheel keeps the noise sum on the grid of the first noise
-publication and hands it to blocks registered on that grid. A noise block
-registered on another grid is refused at `add`, before its `initial_sample`
-runs, because a covariance does not add across grids; a signal block on
-another grid is refused at `add` or `run`; both refusals are `ValueError`s
-naming both grids. A covariance a noise block returns on another grid than its
-own is refused at `add` or `run`. In a campaign that carries covariance,
-register every block on one grid.
+A covariance translates between representations through a diagonal spectral
+model. `transform(noise, "wdm", num_frequency_divisions=8)` reads every stored
+variance as a piecewise-constant one-sided spectral model S(f, t) and writes
+the target grid's variances as weighted means of it (`noise.copy()` makes an
+independent copy; a block state's covariance passes through `transform`
+unchanged). The readings:
+
+| Grid | Stored block | Read as |
+| --- | --- | --- |
+| time | σ²(t_j) per sample | S(f, t_j) = 2 dt σ²(t_j), flat in f |
+| frequency | C_k per bin | S(f_k, t) = 2 C_k / (N dt), flat in t |
+| WDM | C_mn per cell | S(f, t_n) = 2 C_mn across band m |
+
+Into WDM, each cell takes the window-weighted band mean of S at its column
+(the value `domania.wdm_covariance` computes, here in O(N)); out of WDM, a bin
+takes the mean over columns and a sample the window-weighted mean over bands;
+time and frequency translate into each other through the model directly (the
+record's mean power at every bin, the mean power at every sample). From one
+WDM grid onto another, the target rows are band means as in the table and each
+target column reads the one source column at the target column's centre, so a
+target with fewer columns skips source columns and does not carry power
+confined to a skipped one. A translated covariance is `float64` on every grid,
+frequency included: a complex cross term entering the translation keeps its
+real part, the mean power of the pair.
+
+White noise is exact on every path and at any row count. A stationary PSD
+comes back band-smoothed from a trip through WDM, a time-varying variance
+column-smoothed, and time ↔ frequency flattens both; those three smoothings
+are the whole approximation. The time → WDM mean is exact only for a variance
+that varies slowly over a column and whose two record ends match (the record
+is read as periodic); a step in the variance is column-smoothed, while the DC
+and Nyquist rows stay exact for any variance. Whether a diagonal reading of
+your noise on your grids is good enough is yours to assess: Wheel does not
+restrict grid choices on its account.
+
+Wheel uses the rule for the noise sum. A noise block publishes on the grid it
+registered on (a covariance on another grid is refused at `add` or `run`,
+`ValueError` naming both grids); the ledger keeps that publication natively,
+the noise sum on the home grid receives its translation, and every block
+receives the sum translated onto its own grid. One translation plus the
+validating construction of its result costs about 0.26 s on 3 channels of
+2^20 samples; [Scaling](#scaling) lists what a cycle pays.
+
+A block on the home grid pays no transform and no translation. For the fast
+path, translate a known noise model onto the home grid once and register the
+blocks there with `data_domain="wdm"` and no division counts:
+
+```python
+from enchilada import FixedNoiseBlock, Wheel, transform
+
+wheel = Wheel(observed_data=observed, num_frequency_divisions=32)
+wheel.add(
+    FixedNoiseBlock("floor", transform(noise, "wdm", num_frequency_divisions=32)),
+    data_domain="wdm",
+)
+wheel.add(wdm_block, data_domain="wdm")  # served on the home grid itself
+```
 
 The [translation notebook](examples/domain_translation.ipynb) walks through the
 same API with plots, round-trip checks, and blocks using different domains.
@@ -553,7 +617,7 @@ Scientific shorthand is part of the API:
   samples, so `Tobs`/`df`/`dt` and the PSD grid stay well defined. `"wdm"` uses the
   two-dimensional real coefficient layout recorded by `wdm_grid`. A returned
   signal must match the representation and grid handed to that block; Wheel
-  translates it back when an explicit block representation was selected.
+  transforms it onto its home grid for storage.
 - `num_time_samples` — required when constructing frequency-domain data;
   inferred from time arrays or WDM coefficient shapes when omitted in those domains.
   Transformations preserve it. For a time-series input:
@@ -589,9 +653,9 @@ producing quietly wrong science:
   `channel_names`, array lengths must match `data_domain`/`num_time_samples`,
   and an attached orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
-- `Wheel` checks `name`, `initial_sample` and `sample` before registration,
-  then validates every start or returned signal's channels, lengths,
-  real/complex kind, and finiteness.
+- `Wheel` checks `name`, `initial_sample`, `sample` and `role` before
+  registration, then validates every start or returned signal's channels,
+  lengths, real/complex kind, and finiteness.
   Each returned state is checked against the block's role (a signal block may
   not publish a covariance, a noise block must publish one and no template),
   and covariance publications are checked for channel order and for the
@@ -757,11 +821,24 @@ oversights:
   window that contains flagged samples for this reason. A future data-gap interface
   must define how masking affects residual arithmetic, sampling grids, and
   windowing.
-- **No covariance delivery across grids yet.** A `Covariance` lives on one
-  grid and is not translated, so a campaign that carries covariance keeps every
-  block on the grid of the first noise publication; a noise block on another
-  grid is refused at `add`, a signal block at `add` or `run`. Delivering a
-  noise model to blocks on several grids is still open.
+- **The home grid needs an even factorisation.** `Wheel` stores the campaign on
+  a WDM grid, so the record length must be `num_frequency_divisions *
+  num_time_divisions` with both counts even: an odd record, or a length not
+  divisible by four, cannot carry a campaign; trim or pad before constructing
+  one.
+- **Covariance translation is diagonal.** A covariance translated between grids
+  is read as diagonal on both; the smoothings listed under
+  [Time, frequency, and WDM translation](#time-frequency-and-wdm-translation)
+  are the price, and Wheel does not check how good that reading is for your
+  noise.
+- **The home grid's band width limits coloured noise off it.** A block on the
+  frequency grid receives the noise sum averaged over home-grid bands of width
+  fs / (2 · num_frequency_divisions), so the row count sets how coarsely a
+  coloured PSD reaches it: the forge test's f⁻² corner at 1 mHz arrives 59
+  times too large at 1 mHz with 64 rows at 0.4 Hz, and 1.5 times with 128
+  (see the [forge README](forge/README.md)). Choose the rows for the
+  narrowest spectral feature such a block must see; white noise is exact at
+  any row count.
 - **No checkpoint file format or lifecycle end.** A restart requires the blocks'
   sampler states, Wheel's accepted physical estimates, and the relevant RNG states
   to be saved and restored consistently. Serialization, restoration, and resource
@@ -783,16 +860,35 @@ noise publication is revalidated on every call, an unchanged `FixedNoiseBlock`
 one included, and re-adds the O(log B) partial sums on its path through the
 noise-sum tree, each through the validating constructor (at most one batched
 Cholesky per tree level); a noise block's input, the sum over the other noise
-blocks, is assembled the same way. Keep unbounded chains in a callback sink,
-outside `BlockState`. Run [the benchmark](benchmarks/benchmark_wheel.py) for a
-reproducible workload, cycle timings, and process peak memory usage. Its
+blocks, is assembled the same way.
+
+The home grid puts the remaining cost on the blocks off it. A block on the
+home grid (`data_domain="wdm"` without counts) pays no transform and no
+translation. A block on another grid pays up to three data transforms per call
+(its residual and previous template in, its returned template out) and one
+covariance translation (the sum it receives, or its own publication onto the
+home grid). One cycle of one campaign on 3 channels of 2^20 samples took
+151 ms on the Wheel before the home grid; it takes 158 ms with every block on
+the home grid, and about 1.2 s in the quickstart pattern (time observations, a
+`FixedNoiseBlock` built on the time grid, the blocks on their default grid). In
+that pattern the floor costs about 460 ms (the residual transform 88 ms,
+`Covariance.copy` 118 ms, the translation onto the home grid 258 ms) and each
+time-grid signal block about 350 ms (the residual transform 88 ms, the
+hand-over translation 264 ms). The same noise total is translated once for
+every signal block off the home grid; it is not cached yet.
+
+Keep unbounded chains in a callback sink, outside `BlockState`. Run
+[the benchmark](benchmarks/benchmark_wheel.py) for a reproducible workload,
+cycle timings, and process peak memory usage (`--rows` sets its home grid). Its
 workload is the fixed signals plus one `FixedNoiseBlock` (`"noise_blocks": 1`
-in its report), so its timings are not comparable with runs from before the
-noise sum.
+in its report), all on the time grid the data arrive on, so its timings are
+not comparable with runs from before the noise sum or the home grid: time-grid
+blocks pay three data transforms per call and one covariance translation per
+block per cycle.
 
 ## Status
 
-0.4.0 — in development, with block-owned samplers and
-Wheel-owned accepted physical estimates. This is still an alpha; pin a version for
+0.4.0 — in development, with block-owned samplers, Wheel-owned accepted
+physical estimates and a WDM home grid. This is still an alpha; pin a version for
 a running campaign. Copyright (c) 2026 Aaron Johnson. Licensed under the
 [Apache License, Version 2.0](LICENSE). Issues and questions welcome.

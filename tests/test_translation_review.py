@@ -81,7 +81,7 @@ def test_home_grid_block_receives_the_covariance_without_transform(
 
     class RecordCovariance:
         role = "signal"
-        name = "explicit"
+        name = "probe"
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             covariance.check_compatible(conditional_residual)
@@ -96,13 +96,13 @@ def test_home_grid_block_receives_the_covariance_without_transform(
     assert received == [2.0 / observed.fs, 2.0 / observed.fs]
 
 
-@pytest.mark.parametrize("canonical_domain", ["time", "wdm"])
+@pytest.mark.parametrize("arrival_domain", ["time", "wdm"])
 def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
-    observed, canonical_domain
+    observed, arrival_domain
 ):
-    canonical = (
+    arrival = (
         observed
-        if canonical_domain == "time"
+        if arrival_domain == "time"
         else transform(observed, "wdm", num_frequency_divisions=8)
     )
     fail = [True]
@@ -126,8 +126,8 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
                 parameters={"amplitude": amplitude, "coordinates": np.array([3.0])}
             )
 
-    actual = Wheel(canonical, num_frequency_divisions=8, random_seed=7)
-    control = Wheel(canonical, num_frequency_divisions=8, random_seed=7)
+    actual = Wheel(arrival, num_frequency_divisions=8, random_seed=7)
+    control = Wheel(arrival, num_frequency_divisions=8, random_seed=7)
     for wheel in (actual, control):
         wheel.add(
             starting_at(
@@ -145,13 +145,13 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     np.testing.assert_array_equal(
         actual.ledger["mutate"].parameters["coordinates"], [3.0]
     )
-    for name in canonical.channel_names:
+    for name in arrival.channel_names:
         np.testing.assert_array_equal(
-            actual.observed_data.channel_data[name], canonical.channel_data[name]
+            actual.observed_data.channel_data[name], arrival.channel_data[name]
         )
         np.testing.assert_allclose(
             actual.residual().channel_data[name],
-            canonical.channel_data[name],
+            arrival.channel_data[name],
             rtol=1e-12,
             atol=1e-12,
         )

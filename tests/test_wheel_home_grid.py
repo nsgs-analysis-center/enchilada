@@ -470,7 +470,6 @@ class TestNoiseSum:
         wheel.run(1)
         native = wheel.ledger["floor"].covariance
         assert native.grid == coarse.grid
-        assert native.grid.wdm_grid.num_frequency_divisions == 4
         np.testing.assert_array_equal(
             native.blocks, white_covariance(coarse, 2.0).blocks
         )
@@ -530,7 +529,9 @@ class TestHomeGridHandOver:
         )
         np.testing.assert_array_equal(wheel.covariance.blocks, total)
 
-    def test_a_home_grid_block_cannot_corrupt_the_working_residual(self, observed):
+    def test_a_home_grid_block_cannot_corrupt_the_residual_through_a_failed_start(
+        self, observed
+    ):
         class Scribbler(LevelSignal):
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 values = conditional_residual.channel_data["A"]

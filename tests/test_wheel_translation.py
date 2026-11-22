@@ -1,7 +1,7 @@
 """Wheel serves each block on its own grid from a WDM home grid.
 
-Templates are kept on the home grid and the views come back on the observation
-grid to rounding. A noise block's publication is kept natively in the ledger and
+Templates are kept on the home grid and the views come back on the arrival grid
+to rounding. A noise block's publication is kept natively in the ledger and
 translated onto the home grid for the sum, which every block receives translated
 onto its own grid; a noise block must still publish on the grid it registered on.
 """
@@ -106,15 +106,15 @@ class ConstantSignal:
         return self._render(conditional_residual)
 
 
-@pytest.mark.parametrize("canonical_domain", ["time", "frequency", "wdm"])
+@pytest.mark.parametrize("arrival_domain", ["time", "frequency", "wdm"])
 @pytest.mark.parametrize("third_domain", ["frequency", "wdm"])
-def test_mixed_blocks_receive_matching_inputs_and_return_canonical_states(
-    canonical_domain, third_domain
+def test_mixed_blocks_receive_matching_inputs_and_report_on_the_arrival_grid(
+    arrival_domain, third_domain
 ):
     data = observations()
-    options = {"num_frequency_divisions": 8} if canonical_domain == "wdm" else {}
-    canonical = transform(data, canonical_domain, **options)
-    wheel = Wheel(canonical, num_frequency_divisions=8, random_seed=42)
+    options = {"num_frequency_divisions": 8} if arrival_domain == "wdm" else {}
+    arrival = transform(data, arrival_domain, **options)
+    wheel = Wheel(arrival, num_frequency_divisions=8, random_seed=42)
     domains = ("time", "frequency", third_domain)
     blocks = {}
     for name, amplitude, domain in zip(
@@ -125,12 +125,12 @@ def test_mixed_blocks_receive_matching_inputs_and_return_canonical_states(
         blocks[name] = block
         wheel.add(block, data_domain=domain, **options)
     wheel.run(3)
-    assert wheel.working_residual.data_domain == canonical_domain
+    assert wheel.working_residual.data_domain == arrival_domain
     restored = transform(wheel.residual(), "time")
     np.testing.assert_allclose(restored.channel_data["A"], 1.5, atol=1e-12)
     for name in ("one", "two", "half"):
         assert blocks[name].state.updates == 3
-        assert wheel.contribution(name)["A"].shape == canonical.channel_data["A"].shape
+        assert wheel.contribution(name)["A"].shape == arrival.channel_data["A"].shape
 
 
 def test_wdm_noise_publication_is_held_on_the_wdm_grid():

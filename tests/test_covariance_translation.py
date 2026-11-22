@@ -115,7 +115,7 @@ class TestExactCases:
         exact = (np.abs(F @ W_inverse) ** 2) @ cells.ravel()
         mine = translate_blocks(one(cells), WDM, FREQUENCY)[0, 0]
         assert mine.dtype == np.float64
-        assert relative(mine.real, exact) < 1e-12
+        assert relative(mine, exact) < 1e-12
 
     def test_a_slowly_varying_white_variance_into_wdm_is_the_exact_cell_variance(
         self, dense
@@ -169,7 +169,7 @@ class TestExactCases:
         variance = 1.0 + 0.8 * np.sin(2 * np.pi * np.arange(N) / N)
         mine = translate_blocks(one(variance), TIME, FREQUENCY)[0, 0]
         assert mine.dtype == np.float64
-        assert relative(mine.real, DT**2 * variance.sum()) < 1e-14
+        assert relative(mine, DT**2 * variance.sum()) < 1e-14
 
     def test_a_frequency_target_is_real_valued_float64(self):
         variance = 1.7
@@ -179,6 +179,8 @@ class TestExactCases:
         cells = np.full((NF, NT), 2.0)
         from_wdm = translate_blocks(one(cells), WDM, FREQUENCY)
         assert from_wdm.dtype == np.float64
+        # White cells of 2.0 are dt * sigma^2 = 2.0, so N dt^2 sigma^2 per bin.
+        assert relative(from_wdm[0, 0], 2.0 * N * DT) < 1e-14
 
     def test_wdm_to_time_preserves_the_trace_and_flattens_a_stationary_input(
         self, dense
@@ -253,27 +255,41 @@ class TestTransformOverload:
         ids=["f-t", "f-w", "f-w-t", "f-t-w", "f-w-f", "f-w-w16"],
     )
     def test_a_correlated_covariance_stays_hermitian_and_positive_definite(self, path):
-        translated = three_channel_spectrum()
-        for step in path:
-            if step == "wdm16":
-                translated = transform(translated, "wdm", num_frequency_divisions=16)
-                expected = grid("wdm", 16)
-            else:
-                translated = transform(
-                    translated,
-                    step,
-                    num_frequency_divisions=NF if step == "wdm" else None,
-                )
-                expected = grid(step)
-            assert type(translated) is Covariance
-            assert translated.channel_names == ("A", "E", "T")
-            assert translated.grid == expected
-            assert translated.blocks.dtype == np.float64
-            assert np.all(translated.A > 0)
-        back = transform(translated, "frequency")
+        source = three_channel_spectrum()
+        # The real part of a Hermitian positive definite matrix is one too.
+        real_part = Covariance(
+            source.blocks.real.copy(),
+            channel_names=source.channel_names,
+            grid=FREQUENCY,
+        )
+        backs = []
+        for translated in (source, real_part):
+            for step in path:
+                if step == "wdm16":
+                    translated = transform(
+                        translated, "wdm", num_frequency_divisions=16
+                    )
+                    expected = grid("wdm", 16)
+                else:
+                    translated = transform(
+                        translated,
+                        step,
+                        num_frequency_divisions=NF if step == "wdm" else None,
+                    )
+                    expected = grid(step)
+                assert type(translated) is Covariance
+                assert translated.channel_names == ("A", "E", "T")
+                assert translated.grid == expected
+                assert translated.blocks.dtype == np.float64
+                assert np.all(translated.A > 0)
+            backs.append(transform(translated, "frequency"))
+        back, back_of_real_part = backs
         assert back.grid == FREQUENCY
         assert back.blocks.dtype == np.float64
-        assert np.all(back.blocks[0, 1].imag == 0)  # the diagonal model keeps Re
+        # The complex A-E term keeps its real part, the mean power of the pair:
+        # bit for bit what the real part alone translates to, and not zero.
+        np.testing.assert_array_equal(back.blocks, back_of_real_part.blocks)
+        assert np.any(back.AE != 0)
         assert np.all(back.A > 0)
 
     def test_reference_data_is_accepted_and_ignored(self):

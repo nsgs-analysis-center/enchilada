@@ -85,10 +85,11 @@ def check_block(
     """Run a block on a scratch Wheel and validate each returned BlockState.
 
     Registers each block in ``noise_blocks`` in order, then
-    ``block_under_test``, which calls its ``initial_sample`` on the observation
-    grid, then calls ``sample`` for ``num_cycles``, passing accepted state into
-    each call. Wheel validates the start and every sample alike: the signal
-    grid, finiteness, the declared role's rules and any published Covariance.
+    ``block_under_test``, which calls its ``initial_sample`` on the grid of
+    ``observed_data``, then calls ``sample`` for ``num_cycles``, passing
+    accepted state into each call. Wheel validates the start and every sample
+    alike: the signal grid, finiteness, the declared role's rules and any
+    published Covariance.
 
     Args:
         block_under_test: Configured block whose exchange contract is checked.
