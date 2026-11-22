@@ -73,7 +73,7 @@ def test_home_grid_block_receives_the_covariance_without_transform(
 
     def transform_without_covariance(value, *args, **kwargs):
         if isinstance(value, Covariance):
-            raise AssertionError("a same-grid covariance went through transform()")
+            raise AssertionError("a home-grid covariance went through transform()")
         return delegate(value, *args, **kwargs)
 
     monkeypatch.setattr(enchilada.wheel, "transform", transform_without_covariance)
@@ -91,7 +91,7 @@ def test_home_grid_block_receives_the_covariance_without_transform(
     home = transform(observed, "wdm", num_frequency_divisions=8)
     wheel = Wheel(home)
     wheel.add(FixedNoiseBlock("noise", white_covariance(home, 2.0)))
-    wheel.add(starting_at(RecordCovariance(), BlockState()), data_domain="wdm")
+    wheel.add(starting_at(RecordCovariance(), BlockState()))
     wheel.run(2)
     assert received == [2.0 / observed.fs, 2.0 / observed.fs]
 
@@ -153,6 +153,7 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
             actual.residual().channel_data[name],
             canonical.channel_data[name],
             rtol=1e-12,
+            atol=1e-12,
         )
     fail[0] = False
     actual.run(1)

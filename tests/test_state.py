@@ -193,8 +193,9 @@ def test_failed_adoption_preserves_rng_and_published_state(observed, failure):
     assert actual.ledger["counter"].parameters == expected.ledger["counter"].parameters
 
 
-# None and "time" both register the block on the arrival (time) grid.
-@pytest.mark.parametrize("data_domain", [None, "time"])
+# None registers on the arrival (time) grid and receives a translated covariance;
+# "wdm" is the home grid, where the Wheel hands over a deep copy of its own sum.
+@pytest.mark.parametrize("data_domain", [None, "wdm"])
 def test_covariance_input_and_output_snapshots_are_isolated(observed, data_domain):
     covariance = white_covariance(observed, 1)
     wheel = Wheel(observed, num_frequency_divisions=8)

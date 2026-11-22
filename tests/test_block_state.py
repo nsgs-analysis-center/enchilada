@@ -76,8 +76,24 @@ def test_result_factory_rejects_imaginary_rfft_endpoints(
         observed.block_state(template=signal)
 
 
+@pytest.mark.parametrize("num_time_samples", [5])
+def test_result_factory_accepts_complex_last_bin_on_odd_records(
+    observed, num_time_samples
+):
+    observed = replace(
+        observed,
+        num_time_samples=num_time_samples,
+        channel_data={ch: np.zeros(num_time_samples) for ch in observed.channel_names},
+    ).to_frequency()
+    signal = {ch: samples.copy() for ch, samples in observed.channel_data.items()}
+    signal["A"][0] = 1.0
+    signal["A"][-1] = 2.0 + 3j
+    state = observed.block_state(template=signal)
+    assert state.template["A"][-1] == 2.0 + 3j
+
+
 # A WDM home grid needs two even division counts, so an odd record (no Nyquist
-# bin) cannot carry a Wheel; the frequency-grid factories above cover that case.
+# bin) cannot carry a Wheel; the factory tests above and below cover odd records.
 @pytest.mark.parametrize("num_time_samples", [4, 8])
 def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_samples):
     observed = replace(
@@ -87,6 +103,7 @@ def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_s
     ).to_frequency()
     signal = {ch: samples.copy() for ch, samples in observed.channel_data.items()}
     signal["A"][0] = 1.0
+    signal["A"][1] = 0.5 - 1.5j
     signal["A"][-1] = 2.0  # the Nyquist bin of an even record is real
 
     class Signal:
@@ -372,7 +389,7 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
     error = {
         "omitted": "must return a covariance because 'noise' declares role 'noise'",
         "template": "returned a template but 'noise' declares role 'noise'",
-        "wrong_grid": "grid",
+        "wrong_grid": "noise.sample covariance is on grid",
     }[failure]
     with pytest.raises(ValueError, match=error):
         actual.run(1)
@@ -387,7 +404,10 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
     np.testing.assert_array_equal(actual.contribution("noise")["A"], 0.0)
     np.testing.assert_allclose(actual.contribution("baseline")["A"], 0.5, rtol=1e-12)
     np.testing.assert_allclose(
-        actual.working_residual.channel_data["A"], observed.channel_data["A"] - 0.5
+        actual.working_residual.channel_data["A"],
+        observed.channel_data["A"] - 0.5,
+        rtol=1e-12,
+        atol=1e-12,
     )
     actual.run(1)
     expected.run(1)
@@ -402,5 +422,8 @@ def test_rejected_noise_result_preserves_covariance_state_and_rng(observed, fail
         rtol=1e-12,
     )
     np.testing.assert_allclose(
-        actual.working_residual.channel_data["A"], observed.channel_data["A"] - 0.5
+        actual.working_residual.channel_data["A"],
+        observed.channel_data["A"] - 0.5,
+        rtol=1e-12,
+        atol=1e-12,
     )
