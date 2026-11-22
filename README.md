@@ -865,17 +865,17 @@ blocks, is assembled the same way.
 The home grid puts the remaining cost on the blocks off it. A block on the
 home grid (`data_domain="wdm"` without counts) pays no transform and no
 translation. A block on another grid pays up to three data transforms per call
-(its residual and previous template in, its returned template out) and one
-covariance translation (the sum it receives, or its own publication onto the
-home grid). One cycle of one campaign on 3 channels of 2^20 samples took
-151 ms on the Wheel before the home grid; it takes 158 ms with every block on
-the home grid, and about 1.2 s in the quickstart pattern (time observations, a
-`FixedNoiseBlock` built on the time grid, the blocks on their default grid). In
-that pattern the floor costs about 460 ms (the residual transform 88 ms,
-`Covariance.copy` 118 ms, the translation onto the home grid 258 ms) and each
-time-grid signal block about 350 ms (the residual transform 88 ms, the
-hand-over translation 264 ms). The same noise total is translated once for
-every signal block off the home grid; it is not cached yet.
+(its residual and previous template in, its returned template out) and a
+covariance translation for the sum it receives; a noise block also pays one for
+its own publication onto the home grid. One cycle of one campaign on 3 channels
+of 2^20 samples took 151 ms on the Wheel before the home grid; it takes 158 ms
+with every block on the home grid, and about 1.2 s in the quickstart pattern
+(time observations, a `FixedNoiseBlock` built on the time grid, the blocks on
+their default grid). In that pattern the floor costs about 460 ms (the residual
+transform 88 ms, `Covariance.copy` 118 ms, the translation onto the home grid
+258 ms) and each time-grid signal block about 350 ms (the residual transform
+88 ms, the hand-over translation 264 ms). The same noise total is translated
+once for every signal block off the home grid; it is not cached yet.
 
 Keep unbounded chains in a callback sink, outside `BlockState`. Run
 [the benchmark](benchmarks/benchmark_wheel.py) for a reproducible workload,
