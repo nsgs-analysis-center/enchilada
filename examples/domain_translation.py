@@ -21,7 +21,7 @@ from enchilada import BlockState, L1Data, Wheel, transform
 class DomainEcho:
     """A fixed zero-signal model recording the representation it receives."""
 
-    role = "signal"
+    role = "signal"  # keep unannotated: `role: str` would become a dataclass field
 
     name: str
     expected_domain: str

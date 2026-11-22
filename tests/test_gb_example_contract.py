@@ -125,7 +125,7 @@ def test_gb_context_requires_independent_channels_and_returns_psd_units(gb_model
 
 
 @pytest.mark.parametrize("storage_domain", ["time", "wdm"])
-def test_gb_frequency_registration_reads_its_native_frequency_covariance(
+def test_gb_frequency_registration_reads_the_home_grid_noise_on_its_frequency_grid(
     gb_model, spectral_context, storage_domain
 ):
     data, noise = spectral_context
@@ -156,6 +156,8 @@ def test_gb_frequency_registration_reads_its_native_frequency_covariance(
     wheel.run(1)
     assert len(seen_psds) == 2
     for psd in seen_psds:
+        # Exact because the fixture PSD is flat; a coloured PSD arrives
+        # band-averaged at the home grid's row resolution.
         np.testing.assert_allclose(psd, 2.0 * noise.pair("A", "A") / data.Tobs)
     # The publication is kept natively; the sum is its home-grid translation.
     assert wheel.ledger["noise"].covariance.grid == data.grid

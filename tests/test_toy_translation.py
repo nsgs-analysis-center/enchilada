@@ -28,7 +28,8 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
     chains = []
     wheels = []
     for observed in (data, translated_data):
-        # One 8 x 512 home grid for both campaigns (the WDM observations' own).
+        # One 8 x 512 home grid for both campaigns (for the wdm case, the
+        # observations' own).
         wheel = Wheel(observed, num_frequency_divisions=8, random_seed=42)
         for name, frequency in (("slow", 0.004), ("fast", 0.011)):
             wheel.add(toy.SineBlock(name, frequency), data_domain="time")
@@ -55,7 +56,7 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
     for wheel in wheels:
         assert wheel.ledger["noise"].covariance.grid == data.grid
         assert wheel.covariance.grid == wheel.home_grid
-    assert wheels[1].covariance.grid == wheels[0].covariance.grid
+    assert wheels[1].home_grid == wheels[0].home_grid
     np.testing.assert_allclose(
         wheels[1].covariance.A, wheels[0].covariance.A, rtol=1e-12
     )

@@ -41,6 +41,7 @@ def test_the_excess_variance_is_recovered_above_the_floor(noise_floor):
     np.testing.assert_allclose(
         transform(wheel.covariance, "time").A,
         noise_floor.TRUTH["floor"] + wheel.ledger["excess"].covariance.A,
+        rtol=1e-12,
     )
     assert wheel.ledger["excess"].template is None
     assert wheel.ledger["excess"].parameters["variance"] == pytest.approx(
