@@ -28,11 +28,12 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
     chains = []
     wheels = []
     for observed in (data, translated_data):
-        wheel = Wheel(observed, random_seed=42)
+        # One 8 x 512 home grid for both campaigns (the WDM observations' own).
+        wheel = Wheel(observed, num_frequency_divisions=8, random_seed=42)
         for name, frequency in (("slow", 0.004), ("fast", 0.011)):
-            wheel.add(toy.SineBlock(name, frequency), role="signal", data_domain="time")
+            wheel.add(toy.SineBlock(name, frequency), data_domain="time")
         noise_block = toy.WhiteNoiseBlock("noise")
-        wheel.add(noise_block, role="noise", data_domain="time")
+        wheel.add(noise_block, data_domain="time")
         chain = []
 
         def collect(cycle, campaign, samples=chain):
@@ -49,8 +50,11 @@ def test_toy_time_blocks_preserve_draws_on_translated_observations(
         wheels.append(wheel)
 
     np.testing.assert_allclose(chains[1], chains[0], rtol=1e-12, atol=1e-12)
-    # Both wheels hold the noise block's publication on the time grid it
-    # samples on, whatever grid the observations are stored on.
+    # Both ledgers hold the noise block's publication on the time grid it
+    # samples on; both sums live on the shared home grid.
+    for wheel in wheels:
+        assert wheel.ledger["noise"].covariance.grid == data.grid
+        assert wheel.covariance.grid == wheel.home_grid
     assert wheels[1].covariance.grid == wheels[0].covariance.grid
     np.testing.assert_allclose(
         wheels[1].covariance.A, wheels[0].covariance.A, rtol=1e-12

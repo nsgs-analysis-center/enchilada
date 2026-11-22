@@ -75,10 +75,13 @@ def test_toy_prior_is_random_and_separate_campaigns_are_reproducible():
 
     toy = load_example("toy_fit")
     observed = toy.make_observed()
-    campaigns = [Wheel(observed, random_seed=seed) for seed in (42, 42, 43)]
+    campaigns = [
+        Wheel(observed, num_frequency_divisions=64, random_seed=seed)
+        for seed in (42, 42, 43)
+    ]
     for wheel in campaigns:
-        wheel.add(toy.SineBlock(name="slow", freq=0.004), role="signal")
-        wheel.add(toy.WhiteNoiseBlock(name="noise"), role="noise")
+        wheel.add(toy.SineBlock(name="slow", freq=0.004))
+        wheel.add(toy.WhiteNoiseBlock(name="noise"))
     priors = [w.ledger["slow"].parameters["amplitude"] for w in campaigns]
     assert priors[0] == priors[1]
     assert priors[0] != priors[2]
@@ -99,11 +102,11 @@ def test_white_noise_block_refuses_to_sit_beside_another_noise_block():
 
     toy = load_example("toy_fit")
     observed = toy.make_observed()
-    wheel = Wheel(observed, random_seed=0)
+    wheel = Wheel(observed, num_frequency_divisions=64, random_seed=0)
     floor = Covariance.like(observed, {"A": np.full(observed.num_time_samples, 0.2)})
-    wheel.add(FixedNoiseBlock("floor", floor), role="noise", data_domain="time")
+    wheel.add(FixedNoiseBlock("floor", floor), data_domain="time")
     with pytest.raises(ValueError, match="only noise block"):
-        wheel.add(toy.WhiteNoiseBlock(name="noise"), role="noise", data_domain="time")
+        wheel.add(toy.WhiteNoiseBlock(name="noise"), data_domain="time")
 
 
 def test_sine_conditional_includes_declared_amplitude_prior():

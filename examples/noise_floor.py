@@ -1,11 +1,13 @@
 """Two noise blocks: a known floor plus a sampled excess variance on top of it.
 
-The campaign registers two blocks with role="noise". FixedNoiseBlock publishes
-the known instrument floor on every call; ExcessNoiseBlock samples an extra
-white-noise variance with a Metropolis random walk in log-variance. Wheel hands
-the excess block the floor as its `covariance` (the sum over the other noise
-blocks) and keeps the campaign covariance equal to floor + excess, which is what
-a signal block registered here would receive.
+The campaign registers two noise blocks, each declaring role = "noise".
+FixedNoiseBlock publishes the known instrument floor on every call;
+ExcessNoiseBlock samples an extra white-noise variance with a Metropolis random
+walk in log-variance. Wheel hands the excess block the floor as its `covariance`
+(the sum over the other noise blocks, translated onto the block's time grid) and
+keeps the campaign covariance equal to floor + excess on its WDM home grid,
+which a signal block registered on any grid would receive translated onto its
+own.
 
 The likelihood is a Gaussian likelihood of time-domain data with independent
 channels: each time sample is an independent real Gaussian whose variance is in
@@ -22,7 +24,7 @@ from typing import Any
 
 import numpy as np
 
-from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel, transform
 
 TRUTH = {"floor": 0.25, "excess": 0.75}
 
@@ -43,6 +45,8 @@ class ExcessNoiseBlock:
     `data_domain="time"` and build the floor on that time grid. The block
     refuses a `None` floor, so register it after another noise block.
     """
+
+    role = "noise"
 
     def __init__(
         self,
@@ -180,7 +184,11 @@ def run_example(
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
     campaign_seed = np.random.SeedSequence(seed).spawn(1)[0]
-    wheel = Wheel(observed, random_seed=int(campaign_seed.generate_state(1)[0]))
+    wheel = Wheel(
+        observed,
+        num_frequency_divisions=32,  # the WDM home grid: 32 rows x 64 columns
+        random_seed=int(campaign_seed.generate_state(1)[0]),
+    )
     floor = Covariance.like(
         observed,
         {
@@ -190,17 +198,19 @@ def run_example(
     )
     # Both are noise blocks. The floor must go first because the excess block
     # refuses to start without it; Wheel keeps floor + excess as the campaign
-    # covariance.
-    wheel.add(FixedNoiseBlock("floor", floor), role="noise")
-    wheel.add(ExcessNoiseBlock("excess"), role="noise")
+    # covariance on its home grid.
+    wheel.add(FixedNoiseBlock("floor", floor))
+    wheel.add(ExcessNoiseBlock("excess"))
     chain: list[float] = []
 
     def collect(cycle: int, w: Wheel) -> None:
         chain.append(w.ledger["excess"].parameters["variance"])
         if (cycle + 1) % 100 == 0:
+            # The campaign covariance is on the home grid; read it on the time grid.
+            total = transform(w.covariance, "time").A[0]
             print(
                 f"cycle {cycle + 1:4d}: excess variance draw = {chain[-1]:.4f}  "
-                f"(campaign covariance A[0] = {w.covariance.A[0]:.4f})"
+                f"(campaign covariance A[0] = {total:.4f})"
             )
 
     wheel.run(n_cycles, on_cycle_complete=collect)
