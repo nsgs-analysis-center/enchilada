@@ -20,11 +20,12 @@ this folder assumes you have read it.
    covariance, calls `initial_sample` and `sample` by hand with asserts on
    the returned state, and runs `check_block` with the covariance as a
    `FixedNoiseBlock`. Edits to `block.py` take effect cell by cell.
-3. **Run `wheel.ipynb`.** A `Wheel` on the same window, the covariance
-   registered as a `FixedNoiseBlock` (`role="noise"`), the block registered
-   on its grid with `role="signal"`, a chain collected through
-   `on_cycle_complete`, the posterior against a truth you type in, and a
-   trace plot.
+3. **Run `wheel.ipynb`.** A `Wheel` on the same window with a WDM home grid of
+   `FORGE_ROWS` rows (default 64), the covariance registered as a
+   `FixedNoiseBlock` (a block with `role = "noise"`), `ForgeBlock` (which
+   declares `role = "signal"`) registered on its grid, a chain collected
+   through `on_cycle_complete`, the posterior against a truth you type in, and
+   a trace plot.
 
 ## Setup
 
@@ -73,17 +74,19 @@ asserts on it. To test recovery, inject a signal into the window the way
 window with a nonzero `tdi_flags` sample; `load_window(start_offset_s=...)`
 moves it.
 
-To move the block to another grid, change `DOMAIN` in both notebooks (for
-WDM also `NUM_FREQUENCY_DIVISIONS`, the row count: it and the decimated
-window length divided by it must both be even integers, so choose
-`FORGE_DURATION_S` to fit, or load with `load_window(..., domain="wdm",
-num_frequency_divisions=..., num_time_divisions=...)`, which derives the
-duration), render `_template` on that grid, update `_check_residual`, and
-rewrite the likelihood in `sample` (`inner_product` is the frequency
-grid's). A signal block receives the sum of the noise blocks' covariances,
-which lives on one grid, so every block registers on that grid (a
-covariance does not translate between grids); another grid means moving
-`DOMAIN`, and with it the covariance, for the whole campaign.
+To move the block to another grid, change `DOMAIN` in both notebooks, render
+`_template` on that grid, update `_check_residual`, and rewrite the likelihood
+in `sample` (`inner_product` is the frequency grid's). The campaign itself
+lives on a WDM home grid of `NUM_FREQUENCY_DIVISIONS` rows (`FORGE_ROWS`,
+default 64): that count and the decimated window length divided by it must
+both be even integers, so choose `FORGE_DURATION_S` to fit, or load with
+`load_window(..., domain="wdm", num_frequency_divisions=...,
+num_time_divisions=...)`, which derives the duration. `DOMAIN = "wdm"` serves
+the block on the home grid itself. A block on any other grid is served by
+exact data transforms and receives the noise sum translated onto its grid
+through the diagonal spectral-model rule (exact for the white stand-in PSD,
+band-smoothed for a coloured one; see the README's translation table), so
+blocks on different grids can share one campaign.
 
 ## Caveats
 
