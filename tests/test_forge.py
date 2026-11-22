@@ -288,6 +288,23 @@ def test_white_psd_matches_the_white_covariance_convention(
         )
 
 
+def test_a_translated_frequency_covariance_is_the_home_grid_covariance(
+    simulated_file, forge_data
+):
+    """The coloured PSD's frequency covariance, translated onto the home grid,
+    is what analytic_covariance builds on the home-grid data directly."""
+    spectrum = load_grid(forge_data, simulated_file, "frequency")
+    cells = transform(spectrum, "wdm", num_frequency_divisions=HOME_ROWS)
+    translated = transform(
+        forge_data.analytic_covariance(spectrum, coloured_psd),
+        "wdm",
+        num_frequency_divisions=HOME_ROWS,
+    )
+    direct = forge_data.analytic_covariance(cells, coloured_psd)
+    assert translated.grid == direct.grid == cells.grid
+    np.testing.assert_allclose(translated.blocks, direct.blocks, rtol=1e-12)
+
+
 @pytest.mark.parametrize("domain", ["time", "frequency", "wdm"])
 def test_a_constant_psd_broadcasts_like_white_psd(simulated_file, forge_data, domain):
     window = load_grid(forge_data, simulated_file, domain)

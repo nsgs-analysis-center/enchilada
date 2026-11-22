@@ -828,3 +828,21 @@ class TestRefusals:
         ):
             wheel.run(1)
         assert_unchanged(wheel, before)
+
+    @pytest.mark.parametrize("domain", ["time", "frequency"])
+    def test_division_counts_off_wdm_are_refused_before_the_block_runs(
+        self, observed, domain
+    ):
+        wheel = Wheel(observed, num_frequency_divisions=NF, random_seed=3)
+        wheel.add(FixedNoiseBlock("floor", white_covariance(observed, 1.0)))
+        wheel.add(LevelSignal("time", 1.0))
+        before = snapshot(wheel)
+        block = LevelSignal("spectral", 1.0)
+        with pytest.raises(
+            ValueError,
+            match=re.escape("division counts apply only to target_domain='wdm'"),
+        ):
+            wheel.add(block, data_domain=domain, num_frequency_divisions=4)
+        assert block.state.received == []
+        assert "spectral" not in wheel.ledger
+        assert_unchanged(wheel, before)

@@ -38,10 +38,9 @@ All notable changes to enchilada are documented here. The format follows
   receives the sum over every noise block, a noise block the sum over the
   other noise blocks (`None` when it is alone) with its own last publication
   on `current_block_state.covariance`, and `wheel.covariance` is the whole
-  sum. A signal block that returns a
-  covariance, or a noise block that returns a template or omits its
-  covariance, is refused with `ValueError` naming the block, the method and
-  the role; the campaign is left unchanged.
+  sum. A signal block that returns a covariance, or a noise block that
+  returns a template or omits its covariance, is refused with `ValueError`
+  naming the block, the method and the role; the campaign is left unchanged.
 - `FixedNoiseBlock(name, covariance)`: a noise block that publishes one
   configured covariance on every call; the way to give a campaign a known
   noise model.
@@ -92,12 +91,13 @@ All notable changes to enchilada are documented here. The format follows
   num_time_divisions)`, in which every cell carries data (row 0 interleaves the
   DC and Nyquist bands); `WDMGrid.active_mask` and the inactive-zero rules on
   coefficients and covariances are removed. The private `wdm` backend, its
-  Python >=3.13 requirement and the `wdm.yml` workflow are gone. The
-  `numeric-orbits` and `mojito` extras no longer carry scipy, so `decimate` and
-  `NumericOrbit`'s interpolation need no extra; both extras require
-  `h5py>=3.12.1`. WDM arrays in the old `(Nf + 1, Nt)` layout are refused
-  (`num_frequency_divisions must be a positive even integer, got <Nf + 1>`);
-  regenerate them with `transform` from time or frequency data.
+  Python >=3.13 requirement and the `wdm.yml` workflow are gone. scipy moves
+  from the `numeric-orbits` extra into the core, so `decimate` and
+  `NumericOrbit`'s interpolation need no extra; the `numeric-orbits` and
+  `mojito` extras both require `h5py>=3.12.1`. WDM arrays in the old
+  `(Nf + 1, Nt)` layout are refused (`num_frequency_divisions must be a
+  positive even integer, got <Nf + 1>`); regenerate them with `transform` from
+  time or frequency data.
 - `Covariance` stores one stacked `(K, K, *channel_shape)` Hermitian array,
   `blocks`, and carries its `grid`. `Covariance.like(data, pairs)` is the one
   classmethod and captures the data's grid and channel order; `pair`, the
@@ -121,13 +121,13 @@ All notable changes to enchilada are documented here. The format follows
   `initial_sample`. Registration now consumes campaign RNG draws when the
   start draws from `rng`. Under `check_block`, construct the block with its
   start.
-- **Breaking:** the `role` keyword of `Wheel.add` and `check_block` is gone; a
-  block declares its role. The single covariance owner is gone too: every
-  noise block adds its covariance to the sum, published on its own grid and
-  translated onto the home grid, and the sum reaches each block translated
-  onto its grid; a covariance a noise block returns on another grid than its
-  own is refused at `add` or `run`. A joint signal-and-noise model becomes two
-  blocks, one per role.
+- **Breaking:** every block must declare `role` (`"signal"` or `"noise"`) as
+  a class attribute; `Wheel.add` and `check_block` read it. The single
+  covariance owner is gone: every noise block adds its covariance to the sum,
+  published on its own grid and translated onto the home grid, and the sum
+  reaches each block translated onto its grid; a covariance a noise block
+  returns on another grid than its own is refused at `add` or `run`. A joint
+  signal-and-noise model becomes two blocks, one per role.
 - **Breaking:** `Wheel` stores the campaign on a WDM home grid. Time or
   frequency observations need `num_frequency_divisions` or
   `num_time_divisions` at construction (`ValueError` otherwise) and the record
@@ -145,8 +145,12 @@ All notable changes to enchilada are documented here. The format follows
   transforms per call and one covariance translation per block per cycle, so
   its timings are not comparable with runs from before the noise sum or the
   home grid.
-- `transform` takes `L1Data`, `BlockState` or `Covariance`; a `BlockState`
-  carries its covariance through unchanged.
+- The 0.3.0 covariance-translation seam (`NotImplementedError` from
+  `transform` of a `Covariance`, and from a Wheel handing a covariance to a
+  block on another grid) now translates through the diagonal spectral model;
+  `reference_data` is accepted and ignored for a `Covariance`, and a
+  `BlockState` carries its covariance unchanged. No `NotImplementedError`
+  remains in the package.
 - The examples and notebooks build covariances with `like` from the convention
   `C = (Tobs / 2) S(f)` under `X = dt * rfft(x)` and read them with `pair`.
 - `L1Data` now rejects a bool or non-real `sample_rate_hz` with `TypeError` at
@@ -166,9 +170,6 @@ All notable changes to enchilada are documented here. The format follows
     channel at `f = np.fft.rfftfreq(data.N, data.dt)`.
   - `noise_psd(ch, data)` → `2 * noise.pair(ch, ch) / data.Tobs`.
   - `noise_variance(ch, data)` → `noise.pair(ch, ch)` on time data.
-- The covariance translation seam (`transform` of a `Covariance` used to
-  refuse, and before that took `reference_data`) and every
-  `NotImplementedError` in the package.
 - `Wheel(initial_covariance=...)` and the positional covariance argument: a
   known noise model is a `FixedNoiseBlock` (a block with `role = "noise"`).
 - `NoiseOverwrittenWarning` and the "owner must republish" rule: noise blocks

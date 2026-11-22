@@ -186,6 +186,8 @@ RNG state on the block instance, for example in a nested dataclass with typed fi
 from dataclasses import dataclass
 
 class MyBlock:
+    role = "signal"  # publishes a template; Wheel reads this at add
+
     @dataclass
     class State:
         num_sample_calls: int = 0
@@ -236,13 +238,12 @@ Published parameters must support deep copying. Keep open files, processes, GPU
 resources, and sampler history on the block or in an external sink, outside
 `BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
 
-Every block declares its role, `role = "signal"` or `role = "noise"`, as a
-class attribute, and draws or constructs its own start. `Wheel.add` calls the
-block's `initial_sample` once with the observations minus the adopted starts
-of the blocks registered before it, on the block's grid, together with the
-covariance its role receives (`None` while the noise sum is empty) and the
-campaign RNG, then validates and adopts the returned state exactly like a
-`sample` return. For a known injection, make the start block configuration:
+Every block draws or constructs its own start. `Wheel.add` calls the block's
+`initial_sample` once with the observations minus the adopted starts of the
+blocks registered before it, on the block's grid, together with the covariance
+its role receives (`None` while the noise sum is empty) and the campaign RNG,
+then validates and adopts the returned state exactly like a `sample` return.
+For a known injection, make the start block configuration:
 
 ```python
 signal_block = SineAmplitudeBlock(
@@ -254,10 +255,9 @@ wheel.add(block_to_register=signal_block, data_domain="time")
 A block whose start is not configured draws it from its prior with the `rng`
 it is handed, so a seeded campaign reproduces its starts as well as its
 chains; registration consumes the campaign RNG only when `initial_sample`
-draws from it. The Block protocol requires `name`, `role`, `initial_sample`
-and `sample`. The [Block authoring tutorial](examples/create_block.ipynb) shows
-a complete example. Return signal arrays on the block's requested domain and
-WDM grid, or the observations' own grid if no domain is selected; Wheel
+draws from it. The [Block authoring tutorial](examples/create_block.ipynb)
+shows a complete example. Return signal arrays on the block's requested domain
+and WDM grid, or the observations' own grid if no domain is selected; Wheel
 transforms them onto its home grid for storage. A noise block's start carries
 its covariance on the block's own grid, like a template; the ledger keeps it
 there and the noise sum receives its translation (see
@@ -532,16 +532,20 @@ unchanged). The readings:
 | WDM | C_mn per cell | S(f, t_n) = 2 C_mn across band m |
 
 Into WDM, each cell takes the window-weighted band mean of S at its column
-(the value `domania.wdm_covariance` computes, here in O(N)); out of WDM, a bin
-takes the mean over columns and a sample the window-weighted mean over bands;
-time and frequency translate into each other through the model directly (the
-record's mean power at every bin, the mean power at every sample). From one
-WDM grid onto another, the target rows are band means as in the table and each
-target column reads the one source column at the target column's centre, so a
-target with fewer columns skips source columns and does not carry power
-confined to a skipped one. A translated covariance is `float64` on every grid,
-frequency included: a complex cross term entering the translation keeps its
-real part, the mean power of the pair.
+(the value `domania.wdm_covariance` computes, here in O(N)); from a time
+source, the column value is the window-weighted time mean of the variance
+around the column centre, with the window's squared time profile as weights.
+Out of WDM, each band's mean over columns is spread over the bins with the
+window's band weights normalised per bin; a sample takes the window-weighted
+mean over bands, its column values interpolated onto the samples with the
+window's time profile normalised per sample. Time and frequency translate into
+each other through the model directly (the record's mean power at every bin,
+the mean power at every sample). From one WDM grid onto another, the target
+rows are band means as in the table and each target column reads the one source
+column at the target column's centre, so a target with fewer columns skips
+source columns and does not carry power confined to a skipped one. A translated
+covariance is `float64` on every grid, frequency included: a complex cross term
+entering the translation keeps its real part, the mean power of the pair.
 
 White noise is exact on every path and at any row count. A stationary PSD
 comes back band-smoothed from a trip through WDM, a time-varying variance
@@ -592,7 +596,7 @@ Only `channel_data` may be passed positionally; all settings are keyword-only.
 `sample_rate_hz`, `tdi_generation`, and `physical_observable` are required.
 Omitting `channel_names` (or passing `None`) uses the dictionary's insertion order.
 `L1Data.block_state(template=None, *, covariance=None, parameters=None)` builds a
-published block state and validates supplied template arrays against this observation
+published block state and validates supplied template arrays against this data's
 grid. `L1Data.zero_block_state(*, parameters=None)` supplies explicit zero arrays
 on the same grid for a signal block.
 
@@ -834,11 +838,11 @@ oversights:
 - **The home grid's band width limits coloured noise off it.** A block on the
   frequency grid receives the noise sum averaged over home-grid bands of width
   fs / (2 · num_frequency_divisions), so the row count sets how coarsely a
-  coloured PSD reaches it: the forge test's f⁻² corner at 1 mHz arrives 59
-  times too large at 1 mHz with 64 rows at 0.4 Hz, and 1.5 times with 128
-  (see the [forge README](forge/README.md)). Choose the rows for the
-  narrowest spectral feature such a block must see; white noise is exact at
-  any row count.
+  coloured PSD reaches it: a PSD with an f⁻² corner at 1 mHz reaches a
+  frequency-grid block 59 times too large at 1 mHz with 64 rows at 0.4 Hz
+  (1.5 times with 128; see the [forge README](forge/README.md)). Choose the
+  rows for the narrowest spectral feature such a block must see; white noise
+  is exact at any row count.
 - **No checkpoint file format or lifecycle end.** A restart requires the blocks'
   sampler states, Wheel's accepted physical estimates, and the relevant RNG states
   to be saved and restored consistently. Serialization, restoration, and resource

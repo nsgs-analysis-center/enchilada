@@ -84,7 +84,7 @@ if __name__ == "__main__":
         type=int,
         default=128,
         help="rows of the WDM home grid; --rows must be a positive even integer "
-        "and --samples a multiple of 2 * --rows",
+        "and --samples a positive multiple of 2 * --rows",
     )
     parser.add_argument("--blocks", type=int, nargs="+", default=[4, 16, 64])
     parser.add_argument("--cycles", type=int, default=3)
@@ -97,8 +97,8 @@ if __name__ == "__main__":
         and arguments.samples % (2 * arguments.rows) == 0
     ):
         parser.error(
-            "--rows must be a positive even integer and --samples a multiple "
-            "of 2 * --rows"
+            "--rows must be a positive even integer and --samples a positive "
+            "multiple of 2 * --rows"
         )
     for num_blocks in arguments.blocks:
         print(
