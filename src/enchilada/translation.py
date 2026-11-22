@@ -109,8 +109,9 @@ def transform(
     exactly, a coloured PSD comes back band-smoothed from WDM, a time-varying
     variance comes back column-smoothed, and time <-> frequency keeps only the
     mean power. A time variance enters WDM exactly only when it varies slowly
-    over a column; sharper variations are smoothed, and only the DC and
-    Nyquist rows stay exact. The same grid in and out returns ``value.copy()``.
+    over a column and, the record being read as periodic, its two ends match;
+    sharper variations are smoothed, and only the DC and Nyquist rows stay
+    exact. The same grid in and out returns ``value.copy()``.
     """
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")

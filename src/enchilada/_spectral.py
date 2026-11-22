@@ -12,8 +12,9 @@ positive definiteness survive. White noise round-trips exactly through every
 pair of grids; everything else is smoothed by a band mean (into and out of
 WDM across frequency), a column mean (across time) or the flattening of the
 time <-> frequency step. The user owns that approximation. The window time
-mean is exact for a variance that varies slowly over a column; sharper
-variations are smoothed, and only the DC and Nyquist rows stay exact.
+mean is exact for a variance that varies slowly over a column and, the record
+being read as periodic, has matching ends; sharper variations are smoothed,
+and only the DC and Nyquist rows stay exact.
 
 Reading bins into bands reflects the window's negative-frequency samples back
 onto the positive bins (a one-sided PSD seen through a two-sided window, what
