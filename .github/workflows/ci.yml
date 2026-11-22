@@ -58,10 +58,10 @@ jobs:
           print('py.typed present in installed wheel')
           "
 
-  # The core is numpy, scipy and domania. Prove it imports and tests on every
-  # supported interpreter, including 3.14 (which the LISA dev stack runs); the
-  # HDF5-loader, lisaorbits-loader, Mojito and translation-notebook tests skip
-  # without h5py, lisaorbits and matplotlib.
+  # The core is numpy, scipy, domania and h5py. Prove it imports and tests on
+  # every supported interpreter, including 3.14 (which the LISA dev stack runs);
+  # the lisaorbits-loader and notebook tests skip without lisaorbits and
+  # matplotlib.
   core-only:
     runs-on: ubuntu-latest
     strategy:
@@ -78,7 +78,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install core only (no extras)
         run: uv sync --no-extra numeric-orbits
-      - name: Test (no coverage gate -- HDF5, lisaorbits, Mojito and notebook tests skip)
+      - name: Test (no coverage gate -- lisaorbits and notebook tests skip)
         run: uv run --no-sync pytest -q
 
   # Install the core at its declared floors without the extras: uv sync would
@@ -96,23 +96,24 @@ jobs:
       - name: Install the core at its dependency floors
         run: |
           uv venv --python 3.12
-          uv pip install --only-binary numpy --only-binary scipy --group dev -e . "numpy==2.1.0" "scipy==1.14.1" "domania==3.0.0"
+          uv pip install --only-binary numpy --only-binary scipy --group dev -e . "numpy==2.1.0" "scipy==1.14.1" "domania==3.0.0" "h5py==3.12.1"
       - name: Verify the tested dependency boundary
         run: |
           uv run --no-sync python - <<'PY'
           import importlib.util
 
           import domania
+          import h5py
           import numpy
           import scipy
 
           assert numpy.__version__ == "2.1.0", numpy.__version__
           assert scipy.__version__ == "1.14.1", scipy.__version__
           assert domania.__version__ == "3.0.0", domania.__version__
-          for name in ("h5py", "lisaorbits"):
-              assert importlib.util.find_spec(name) is None, name
+          assert h5py.__version__ == "3.12.1", h5py.__version__
+          assert importlib.util.find_spec("lisaorbits") is None, "lisaorbits"
           print("core minimum: NumPy", numpy.__version__, "SciPy", scipy.__version__,
-                "domania", domania.__version__)
+                "domania", domania.__version__, "h5py", h5py.__version__)
           PY
       - name: Test the core minimum
         run: uv run --no-sync pytest -q

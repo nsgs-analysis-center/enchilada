@@ -126,8 +126,9 @@ class GBBlock:
     the conditional residual.
     ``BlockState.parameters`` and its signal describe the first current walker
     (its prior draw at registration, a posterior draw after mixing).
-    ``state.samples`` holds only this cycle's samples; collect a chain with the
-    Wheel callback. ``state.updates`` counts calls to ``sample``, each of which
+    ``state.samples`` holds only this cycle's samples; the campaign file records
+    only the published walker, so collect the ensemble's samples with the Wheel
+    callback. ``state.updates`` counts calls to ``sample``, each of which
     runs ``steps_per_cycle`` steps.
 
     This CPU example uses one temperature and fixed ensemble splits. Adaptive
@@ -137,7 +138,9 @@ class GBBlock:
     declares ``role = "signal"``.
     This narrowband likelihood requires a frequency-domain covariance on the
     data grid with independent channels; it reads each channel's bin variances
-    and converts them to PSD units with ``2 C / Tobs``.
+    and converts them to PSD units with ``2 C / Tobs``. ``state_from_parameters``
+    renders any parameter set with a fresh GBGPU instance; ``initial_sample`` and
+    ``sample`` reuse theirs.
     """
 
     role = "signal"
@@ -251,6 +254,13 @@ class GBBlock:
             ),
             parameters=dict(zip(self.PARAMETER_NAMES, map(float, params), strict=True)),
         )
+
+    def state_from_parameters(self, parameters, reference_data):
+        """Render one parameter set on the frequency grid, from the parameters alone."""
+        if reference_data.data_domain != "frequency":
+            raise ValueError(f"{self.name}: GBBlock requires frequency-domain data")
+        params = np.array([float(parameters[name]) for name in self.PARAMETER_NAMES])
+        return self._render(_new_gb(), params, reference_data)
 
     def initial_sample(
         self,

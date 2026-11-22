@@ -15,22 +15,19 @@ stored ``A2``/``E2``/``T2`` equal the orthonormal combination of
 ``X2``/``Y2``/``Z2`` that :meth:`enchilada.Covariance.in_basis` uses, so a
 campaign may load either triple.
 
-Imports h5py lazily; the ``mojito`` extra provides it.
+Reads with h5py, a core dependency.
 """
 
 from __future__ import annotations
 
 import math
 import os
-from typing import TYPE_CHECKING
 
+import h5py
 import numpy as np
 
 from enchilada.data import L1Data
 from enchilada.orbits import NumericOrbit
-
-if TYPE_CHECKING:
-    import h5py
 
 TDI_CHANNELS = ("A", "E", "T", "X", "Y", "Z")
 """Channel names the loader accepts; dataset ``tdis/<name>2`` holds each."""
@@ -120,8 +117,6 @@ def load_mojito_l1(
             nonzero ``tdi_flags`` value in the window (enchilada has no gap
             mask).
     """
-    import h5py  # lazy: optional dependency
-
     channels = tuple(channels)
     unknown = [name for name in channels if name not in TDI_CHANNELS]
     if unknown:

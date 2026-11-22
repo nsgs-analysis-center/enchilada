@@ -11,13 +11,14 @@ accepts in-memory tables. Positions use ecliptic Cartesian metres; loaders rotat
 equatorial input when ``coordinate_frame="equatorial"``.
 
 NumericOrbit interpolates with SciPy, a core dependency; its HDF5 loader
-imports h5py on demand (the ``numeric-orbits`` or ``mojito`` extra).
+reads with h5py, a core dependency.
 """
 
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+import h5py
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
@@ -285,8 +286,6 @@ class NumericOrbit:
                 by default, or "ecliptic" to skip rotation.
             nominal_arm_length_m: Optional override for the mean arm length.
         """
-        import h5py  # lazy
-
         with h5py.File(file_path, "r") as orbit_file:
             orbit_group = orbit_file[group_path]
             sampling_metadata = orbit_group["sampling"]

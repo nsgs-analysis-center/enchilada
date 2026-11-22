@@ -93,6 +93,9 @@ class ConstantSignal:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return self._render(conditional_residual)
 
+    def state_from_parameters(self, parameters, reference_data):
+        return self._render(reference_data)
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         previous = transform(
             current_block_state, "time", reference_data=conditional_residual
@@ -138,6 +141,10 @@ def test_wdm_noise_publication_is_held_on_the_wdm_grid():
         role = "noise"
         name = "noise"
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             assert covariance is None  # the only noise block receives no sum
             current_block_state.covariance.check_compatible(conditional_residual)
@@ -177,6 +184,9 @@ def test_failed_translated_result_preserves_accepted_state_and_rng(failure):
     class RandomSignal:
         role = "signal"
         name = "random"
+
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             value = rng.normal()
@@ -224,6 +234,10 @@ def test_invalid_domain_selection_does_not_register_or_sample():
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             raise AssertionError("registration must fail on the domain first")
+
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             raise AssertionError
@@ -310,6 +324,10 @@ def test_covariance_returned_on_another_grid_than_the_block_is_refused():
         role = "noise"
         name = "frequency_noise"
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             assert conditional_residual.data_domain == "frequency"
             return BlockState(
@@ -371,6 +389,9 @@ def test_covariance_published_on_the_block_grid_is_held_there_in_the_ledger():
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return self._publish(conditional_residual, 1.0)
+
+        def state_from_parameters(self, parameters, reference_data):
+            return self._publish(reference_data, parameters["level"])
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return self._publish(conditional_residual, 1.0 + abs(rng.normal()))

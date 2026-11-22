@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
@@ -46,6 +47,39 @@ def test_toy_fit_converges_to_truth():
         assert mean == pytest.approx(truth[name], abs=max(5 * std, 0.05)), (
             f"{name}: posterior {mean} +/- {std} vs truth {truth[name]}"
         )
+
+
+def test_toy_fit_records_its_campaign(tmp_path):
+    from enchilada import L2Data
+
+    toy = load_example("toy_fit")
+    burn_in = 5
+    results = toy.run_toy_fit(
+        n_cycles=20, burn_in=burn_in, seed=0, output_path=tmp_path / "toy.h5"
+    )
+    assert set(results) == {"slow", "fast", "noise"}
+    with L2Data.open(tmp_path / "toy.h5") as l2:
+        assert l2.block_names == ("slow", "fast", "noise")
+        assert l2.num_steps == 20
+        chain = l2.chain("slow", "amplitude")
+        assert chain.shape == (21,)
+        assert results["slow"][0] == pytest.approx(float(chain[burn_in + 1 :].mean()))
+        sigma = l2.chain("noise", "sigma")
+        assert results["noise"][0] == pytest.approx(float(sigma[burn_in + 1 :].mean()))
+
+
+def test_toy_blocks_pass_check_block():
+    from enchilada.testing import check_block
+
+    toy = load_example("toy_fit")
+    data = toy.make_observed()
+    check_block(toy.WhiteNoiseBlock("noise"), data, num_frequency_divisions=64)
+    check_block(
+        toy.SineBlock("slow", 0.004),
+        data,
+        num_frequency_divisions=64,
+        noise_blocks=(toy.WhiteNoiseBlock("noise"),),
+    )
 
 
 def test_notebook_code_cells_execute():
@@ -351,7 +385,6 @@ def test_toy_starts_require_time_data(make_block):
 
 
 def test_load_mojito_example_reads_a_synthetic_file(tmp_path, capsys):
-    pytest.importorskip("h5py", reason="the Mojito loader needs h5py")
     from conftest import write_mojito_file
 
     path = tmp_path / "mojito.h5"
@@ -377,7 +410,6 @@ def test_load_mojito_example_reads_a_synthetic_file(tmp_path, capsys):
 
 
 def test_mojito_wdm_wheel_example_builds_a_wdm_wheel(tmp_path, capsys):
-    pytest.importorskip("h5py", reason="the Mojito loader needs h5py")
     from conftest import MOJITO_T0, write_mojito_file
     from enchilada import WDMGrid
 
@@ -445,7 +477,6 @@ REAL_MOJITO_FILE = os.environ.get("ENCHILADA_MOJITO_L1")
 def test_mojito_wdm_wheel_example_on_the_real_file(capsys):
     """A week at Nf = 512: 2,416,640 native samples per channel, decimated by 10
     to 512 x 472 WDM coefficients. Takes about a second on the Mojito Light file."""
-    h5py = pytest.importorskip("h5py")
     from enchilada import WDMGrid
 
     with h5py.File(REAL_MOJITO_FILE, "r") as f:

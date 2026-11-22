@@ -31,6 +31,7 @@ def test_block_tutorial_runs_and_checks_its_sampler(tmp_path):
             **os.environ,
             "MPLBACKEND": "Agg",
             "MPLCONFIGDIR": str(tmp_path / "matplotlib"),
+            "TMPDIR": str(tmp_path),  # the campaign file stays under tmp_path
         },
         capture_output=True,
         text=True,
@@ -84,7 +85,7 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
     block = module.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=0.4, steps_per_call=20
     )
-    start = block._render(data, 0.0)
+    start = block.state_from_parameters({"amplitude": 0.0}, data)
     # Identical continuation state and RNG, but the other blocks change the
     # conditional data and covariance. A cached old target would repeat a draw.
     positive = block.sample(data, noise, start, rng=np.random.default_rng(1))
@@ -97,6 +98,27 @@ def test_tutorial_sampler_refreshes_target_when_other_blocks_change_it(
     assert negative.parameters["amplitude"] < 0
     assert start.parameters == {"amplitude": 0.0}
     assert block.state.num_proposals == 2 * block.steps_per_call
+
+
+def test_tutorial_noise_block_passes_check_block(tutorial_definitions):
+    import numpy as np
+
+    from enchilada import L1Data
+    from enchilada.testing import check_block
+
+    data = L1Data(
+        channel_data={"A": np.zeros(64)},
+        channel_names=("A",),
+        sample_rate_hz=1.0,
+        tdi_generation="2.0",
+        physical_observable="fractional_frequency",
+    )
+    check_block(
+        tutorial_definitions.WhiteNoiseVarianceBlock(),
+        data,
+        num_cycles=3,
+        num_frequency_divisions=8,
+    )
 
 
 def test_tutorial_rejection_returns_retained_signal_and_complete_state(
@@ -118,7 +140,7 @@ def test_tutorial_rejection_returns_retained_signal_and_complete_state(
     block = tutorial_definitions.SineAmplitudeBlock(
         name="signal", frequency_hz=0.125, proposal_std=1e12, steps_per_call=8
     )
-    start = block._render(data, 0.0)
+    start = block.state_from_parameters({"amplitude": 0.0}, data)
     result = block.sample(data, noise, start, rng=np.random.default_rng(1))
     assert result.parameters == start.parameters
     np.testing.assert_array_equal(result.template["A"], start.template["A"])

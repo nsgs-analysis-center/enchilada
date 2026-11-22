@@ -46,6 +46,9 @@ def test_omitted_domain_and_explicit_same_domain_both_receive_the_covariance(obs
             covariance.check_compatible(conditional_residual)
             return BlockState()
 
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             covariance.check_compatible(conditional_residual)
             received.append(("sample", self.name, conditional_residual.data_domain))
@@ -83,6 +86,10 @@ def test_home_grid_block_receives_the_covariance_without_transform(
         role = "signal"
         name = "probe"
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             covariance.check_compatible(conditional_residual)
             received.append(float(covariance.A.flat[0]))
@@ -110,6 +117,9 @@ def test_rejected_translated_output_rolls_back_mutated_inputs_and_rng(
     class MutateInputs:
         role = "signal"
         name = "mutate"
+
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             amplitude = rng.normal()

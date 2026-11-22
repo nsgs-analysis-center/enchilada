@@ -5,9 +5,7 @@ import os
 import numpy as np
 import pytest
 
-pytest.importorskip("h5py", reason="the Mojito loader needs h5py")
-
-from conftest import (  # noqa: E402
+from conftest import (
     MOJITO_DT,
     MOJITO_ECLIPTIC_Z_M,
     MOJITO_LASER_FREQUENCY_HZ,
@@ -17,7 +15,7 @@ from conftest import (  # noqa: E402
     MOJITO_T0,
     write_mojito_file,
 )
-from enchilada import NumericOrbit, decimate, load_mojito_l1  # noqa: E402
+from enchilada import NumericOrbit, decimate, load_mojito_l1
 
 N = 4096
 

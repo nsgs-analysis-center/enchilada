@@ -15,10 +15,11 @@ noise blocks' covariances, and a `Ledger` containing each block's accepted
 `BlockState`: an optional signal template, an optional covariance, and physical
 parameters. The campaign lives on one WDM grid chosen at construction, its
 *home grid*; every block is served on the grid it asks for. Every block declares
-its role, `"signal"` or `"noise"`, as an attribute.
+its role, `"signal"` or `"noise"`, as an attribute. Given an output path, the
+Wheel also records every block's parameters, step by step, to a campaign file.
 Each block owns its sampler continuation state and diagnostics. The Wheel supplies
 the data minus all other blocks' signals, the covariance the block's role
-receives, and the block's accepted physical state, then validates and records
+receives, and the block's accepted physical state, then validates and adopts
 the returned estimate.
 Waveforms, likelihoods, and prior/conditional sampling remain model code.
 
@@ -45,22 +46,20 @@ uv sync
 
 or with pip: `pip install -e .`
 
-The core depends on NumPy (`>=2.1`), SciPy (`>=1.14.1`) and
-[domania](https://pypi.org/project/domania/) (`>=3.0,<4`), which performs the
-WDM transforms. GBGPU, Eryn, and LISA Analysis Tools
-are confined to the optional galactic-binary example. Installing enchilada or
+The core depends on NumPy (`>=2.1`), SciPy (`>=1.14.1`), h5py (`>=3.12.1`, for
+the campaign file) and [domania](https://pypi.org/project/domania/)
+(`>=3.0,<4`), which performs the WDM transforms. GBGPU, Eryn, and LISA Analysis
+Tools are confined to the optional galactic-binary example. Installing enchilada or
 any of its extras does not install them; running that example requires the
 separate `examples/requirements-gb.txt` installation described below.
 
-`enchilada.orbits.NumericOrbit` interpolates with SciPy, a core dependency; its
-file loaders need an extra (`from_hdf5` needs h5py from either extra,
-`from_lisaorbits` needs `numeric-orbits`), and reading Mojito L1 files
-(`enchilada.mojito`) needs the `mojito` extra. Decimating (`enchilada.resample`)
-needs no extra. Install the extras with:
+SciPy and h5py are core, so `NumericOrbit` (interpolation and `from_hdf5`),
+Mojito L1 loading (`enchilada.mojito`) and decimation (`enchilada.resample`)
+need no extra; only `NumericOrbit.from_lisaorbits` needs the `numeric-orbits`
+extra:
 
 ```sh
-uv sync --extra numeric-orbits   # adds h5py, lisaorbits
-uv sync --extra mojito           # or this: adds h5py only (no lisaorbits)
+uv sync --extra numeric-orbits   # adds lisaorbits
 
 # For the notebooks (matplotlib arrives with lisaorbits), install both extras:
 uv sync --extra numeric-orbits --extra examples
@@ -172,6 +171,15 @@ Implement the `Block` protocol:
 - `sample(conditional_residual, covariance, current_block_state, *, rng) -> BlockState`:
   sample against the data minus every other block's latest signal and return
   the new physical estimate.
+- `state_from_parameters(parameters, reference_data) -> BlockState`: rebuild
+  the state these parameters describe on `reference_data`'s grid (the block's
+  registered grid). Use only the parameters, the block's constructor
+  configuration and `reference_data`'s grid metadata and orbit, never its
+  channel values, a random stream or anything `sample` changes. Values read
+  back from a campaign file arrive as numpy types (`np.float64`, `np.int64`,
+  `np.bool_`, and a list as an ndarray), so avoid `isinstance(x, int)` and list
+  operations. The simplest block ends `initial_sample` and `sample` by calling
+  it. `check_block` and `L2Data` call it; the Wheel never does during sampling.
 
 `conditional_residual` is an `L1Data`; `covariance` is a `Covariance` on the same
 grid as `conditional_residual`, or `None`: a signal block receives the sum over
@@ -197,8 +205,9 @@ class MyBlock:
         self.name = name
         self.state = self.State()
 
-    # Implement initial_sample(...) and sample(...); self.state carries
-    # sampler continuation.
+    # Implement initial_sample(...), sample(...) and state_from_parameters(...);
+    # self.state carries sampler continuation; state_from_parameters must not
+    # read self.state.
 ```
 
 `State` is defined by each block; it is not an enchilada interface. Use separate
@@ -234,9 +243,11 @@ One `sample()` call is one block's turn in a Wheel cycle. It may perform many
 internal sampler steps. EchoBlock's `state.num_sample_calls` counts calls to
 `sample()`, not individual sampler draws; its `state.metadata` holds diagnostics.
 
-Published parameters must support deep copying. Keep open files, processes, GPU
-resources, and sampler history on the block or in an external sink, outside
-`BlockState`. A returned `L1Data` is rejected: blocks return a `BlockState`.
+Published parameters must support deep copying and, when the Wheel records a
+campaign file, be recordable (see [Campaign output](#campaign-output)). Keep
+open files, processes, GPU resources, and sampler history on the block or in an
+external sink, outside `BlockState`. A returned `L1Data` is rejected: blocks
+return a `BlockState`.
 
 Every block draws or constructs its own start. `Wheel.add` calls the block's
 `initial_sample` once with the observations minus the adopted starts of the
@@ -255,12 +266,14 @@ wheel.add(block_to_register=signal_block, data_domain="time")
 A block whose start is not configured draws it from its prior with the `rng`
 it is handed, so a seeded campaign reproduces its starts as well as its
 chains; registration consumes the campaign RNG only when `initial_sample`
-draws from it. The [Block authoring tutorial](examples/create_block.ipynb)
-shows a complete example. Return signal arrays on the block's requested domain
-and WDM grid, or the observations' own grid if no domain is selected; Wheel
-transforms them onto its home grid for storage. A noise block's start carries
-its covariance on the block's own grid, like a template; the ledger keeps it
-there and the noise sum receives its translation (see
+draws from it. The Block protocol requires `name`, `role`, `initial_sample`,
+`sample` and `state_from_parameters`. The
+[Block authoring tutorial](examples/create_block.ipynb) shows a complete
+example. Return signal arrays on the block's requested domain and WDM grid, or
+the observations' own grid if no domain is selected; Wheel transforms them onto
+its home grid for storage. A noise block's start carries its covariance on the
+block's own grid, like a template; the ledger keeps it there and the noise sum
+receives its translation (see
 [Time, frequency, and WDM translation](#time-frequency-and-wdm-translation)).
 Blocks start in registration order: register the noise blocks before the
 blocks whose starts need their covariance.
@@ -382,7 +395,7 @@ Wheel uses descriptive arguments at each entry point:
 
 | Entry point | Signature |
 | --- | --- |
-| Constructor | `Wheel(observed_data, *, num_frequency_divisions=None, num_time_divisions=None, random_seed=None)`; time or frequency observations need one count (the other is derived), WDM observations bring their grid |
+| Constructor | `Wheel(observed_data, *, num_frequency_divisions=None, num_time_divisions=None, random_seed=None, output_path=None)`; time or frequency observations need one count (the other is derived), WDM observations bring their grid; `output_path` records the campaign file |
 | Register a block | `add(block_to_register, *, data_domain=None, num_frequency_divisions=None, num_time_divisions=None)`; `None` serves the observations' own grid, `data_domain="wdm"` without counts the home grid |
 | Sample complete cycles | `run(num_cycles, on_cycle_complete=None)` |
 | Read a residual | `residual(exclude_block_name=None)` |
@@ -391,6 +404,11 @@ Wheel uses descriptive arguments at each entry point:
 | A known noise model | `FixedNoiseBlock(name, covariance)`, a block with `role = "noise"` |
 | Add two covariances | `noise_a + noise_b` (same grid and channel order) |
 | Translate a covariance | `transform(noise, target_domain, *, num_frequency_divisions=None, num_time_divisions=None)` (the diagonal spectral-model rule below) |
+| Close the campaign file | `close()`; `with Wheel(...) as wheel:` closes on exit |
+| Open the campaign file | `wheel.l2` live; `L2Data.open(path, *, observed_data=None)` afterwards |
+| Read recorded values | `parameters(name, step=-1)`, `chain(name, key)`, `entries(name, key)` |
+| Rebuild from the file | `states`, `covariance` (home grid), `residual(step, blocks)` (observation grid) |
+| Implemented by every block | `block.state_from_parameters(parameters, reference_data)` |
 
 Inspect `wheel.home_grid`, `wheel.observed_data`, `wheel.working_residual`,
 `wheel.covariance` (on the home grid), and `wheel.ledger[name]`; each returns
@@ -409,11 +427,13 @@ published states, including normal dictionary methods such as `items()`. A Ledge
 compares by identity; compare arrays and parameters explicitly when comparing
 campaigns.
 
-Collect posterior history with `run(num_cycles, on_cycle_complete=callback)`;
-Ledger retains current accepted physical states only. The callback receives
-`(cycle_index, wheel)` after every block in a cycle has accepted its state. The index is zero-based
-and restarts at zero for each `run` call. A partially failed cycle does not invoke
-the callback.
+The campaign file holds posterior history (see
+[Campaign output](#campaign-output)); Ledger retains current accepted physical
+states only. `run(num_cycles, on_cycle_complete=callback)` calls
+`callback(cycle_index, wheel)` once every block in a cycle has accepted its
+state and the cycle has been recorded; use it to monitor progress. The index is
+zero-based and restarts at zero for each `run` call (the file's steps do not). A
+partially failed cycle does not invoke the callback.
 
 A failed call, an invalid state, a publication the block's role forbids or
 lacks, or a failed copy leaves that block's accepted state, the noise sum, the
@@ -444,6 +464,14 @@ This builds a scratch Wheel on an 8-row home grid, registers each block in
 `noise_blocks` (each must declare `role = "noise"`), then the block under test,
 which calls its `initial_sample` on the grid of `observed_data`, then runs the
 requested number of sampling cycles, advancing the supplied blocks' own state.
+After registration (step 0) and after every cycle it calls
+`state_from_parameters` with the ledger entry's parameters, converted to numpy
+types as a campaign file returns them, and a zero-valued copy of
+`observed_data`; after the last cycle it rebuilds step 0 once more. The rebuilt
+template, moved onto the home grid as the Wheel moves a published one, and the
+rebuilt covariance must match the ledger's to a relative 1e-9, so a rebuild
+that reads channel values or the block's sampling state, or expects Python
+types, fails with `ValueError` naming the block and the step.
 Construct `MyBlock` with whatever start it should render; `check_block` does
 not select a separate block domain. A signal block that needs a covariance
 gets it from the noise blocks; a noise block under test receives their sum as
@@ -460,6 +488,92 @@ window of a simulated Mojito-layout L1 file onto the block's grid and builds
 an analytic-PSD `Covariance` there, and two notebooks that exercise the block
 by hand, run `check_block` and run a short campaign. Copy the folder once per
 block; its README has the steps and the caveats.
+
+## Campaign output
+
+Give the Wheel a path and it records the campaign itself: every block's
+parameters at registration (the block's entry 0, at step `first_step(name)`)
+and after each complete cycle, appended to
+an HDF5 file and flushed, no callback needed. Templates are not stored.
+A block rebuilds its state from its parameters through `state_from_parameters`,
+so the file holds what the fit learned and the blocks hold how to render it.
+
+```python
+with Wheel(
+    observed, num_frequency_divisions=32, random_seed=0, output_path="campaign.h5"
+) as wheel:
+    wheel.add(FixedNoiseBlock("noise", covariance))
+    wheel.add(my_block)
+    wheel.run(1000)
+    l2 = wheel.l2
+    assert l2 is not None
+    # (1001,): the start, then one row per cycle
+    chain = l2.chain(my_block.name, "amplitude")
+    # the observation minus every signal block, as wheel.working_residual
+    latest = l2.residual(-1, [my_block])
+
+from enchilada import L2Data
+
+with L2Data.open("campaign.h5", observed_data=observed) as l2:
+    print(l2.num_steps, l2.block_names, l2.home_grid)
+    parameters = l2.parameters(my_block.name, step=500)
+    # {name: BlockState}, templates on the home grid as in wheel.ledger
+    states = l2.states(500, [my_block])
+    residual = l2.residual(500, [my_block])
+```
+
+When a path is given, parameters must be recordable: numeric scalars or arrays
+(bool, integer, float or complex), with the key set and each key's dtype kind
+and number of dimensions fixed at registration; shapes may change from step to
+step. A state that breaks these rules is refused like an off-grid template and
+changes nothing. Without a path nothing is recorded and parameters need only
+support deep copying.
+
+Steps are global: step 0 holds the starts of the blocks added before the first
+`run`, and step `s` the state after the
+`s`-th complete cycle counted over every `run` call. (`on_cycle_complete`'s
+`cycle_index` restarts at zero each `run`; inside the callback
+`wheel.l2.num_steps` is the step just recorded.) A cycle that fails part-way
+records nothing, and negative steps count back from the latest. (A block added
+after such a failed cycle draws its start against the in-memory states the file
+never holds, so `residual` at that step is not the residual the block saw.)
+`parameters(name, step)` returns one step as a dict of numpy scalars and arrays
+in the recorded key order. `chain(name, key)` stacks one key into an array of
+shape `(entries, *shape)` and raises `ValueError` if the shape changes;
+`entries(name, key)` returns the same values as a list, for a reversible-jump
+block whose arrays change length. Row `i` of either is step
+`first_step(name) + i` and row 0 is the start, so `chain[burn_in + 1:]` keeps
+the cycles after a burn-in for a block registered before the first `run`.
+
+`states`, `covariance` (the noise sum) and `residual` (the observation minus
+every signal template) rebuild through `state_from_parameters`, so they take
+the block instances. `covariance` and `residual` need every noise or signal
+block recorded at the step and ignore the rest; `states` rebuilds exactly the
+blocks given. `residual` needs the observation: pass `observed_data=` to
+`L2Data.open`, which also gives the rebuilds the orbit (without it they see a
+zero-valued reference with no orbit). `wheel.l2` has the Wheel's observation.
+
+The file records the observation's grid and the Wheel's home grid
+(`l2.observation_grid`, `l2.home_grid`) beside each block's registered grid
+(`l2.block_grid(name)`). Each block rebuilds on its registered grid and the
+results are combined on the home grid, as the Wheel combines them: `states` holds
+templates on the home grid and covariances on their blocks' grids, as
+`wheel.ledger` does; `covariance` is the sum of the noise blocks' covariances
+translated onto the home grid, as `wheel.covariance` is; and `residual` is the
+observation on the home grid minus the templates, brought back to the
+observation grid by one exact transform, as `wheel.working_residual` is, so the
+two compare directly.
+
+`wheel.close()`, or leaving the `with` block, closes the file. Each record is
+flushed before `on_cycle_complete` runs, so a crash loses at most the cycle in
+progress. If a write fails (a full disk, say), `add` or `run` raises; the
+campaign in memory stays intact and one record ahead of the file, the file
+stays readable up to its last complete step, and the Wheel refuses further
+`add` and `run` with `RuntimeError`. An existing file at the path raises
+`FileExistsError`: there is no restart format (see
+[Known limitations](#known-limitations)). HDF5's file locking refuses the file
+to other processes while the Wheel holds it; read it in-process through
+`wheel.l2`, or after `close()`.
 
 ## Time, frequency, and WDM translation
 
@@ -657,9 +771,9 @@ producing quietly wrong science:
   `channel_names`, array lengths must match `data_domain`/`num_time_samples`,
   and an attached orbit must span the observation (catching GPS-vs-zero-based epoch
   mismatches at construction, not mid-run).
-- `Wheel` checks `name`, `initial_sample`, `sample` and `role` before
-  registration, then validates every start or returned signal's channels,
-  lengths, real/complex kind, and finiteness.
+- `Wheel` checks `name`, `initial_sample`, `sample`, `state_from_parameters`
+  and `role` before registration, then validates every start or
+  returned signal's channels, lengths, real/complex kind, and finiteness.
   Each returned state is checked against the block's role (a signal block may
   not publish a covariance, a noise block must publish one and no template),
   and covariance publications are checked for channel order and for the
@@ -673,8 +787,7 @@ The constellation ephemeris the data was produced with rides on
 `L1Data.orbit_ephemeris` so every block builds its response from the *same*
 spacecraft positions. `enchilada.orbits.NumericOrbit` tabulates and
 cubic-spline-interpolates an ephemeris, with loaders for LDC/Mojito-style
-HDF5 files (`from_hdf5`, which needs h5py from either the `numeric-orbits` or
-the `mojito` extra) and lisaorbits objects
+HDF5 files (`from_hdf5`; h5py is a core dependency) and lisaorbits objects
 (`from_lisaorbits`, which needs `numeric-orbits`).
 
 `Orbit` exposes `nominal_arm_length_m`, `transfer_frequency_hz`, and
@@ -718,7 +831,7 @@ Dataset 1; verified on Mojito Light, and Mojito Heavy shares the layout but
 its flagged gaps must be excluded from the window) into a time-domain
 `L1Data`, and
 `enchilada.resample.decimate` reduces the 4 Hz record to a rate a campaign can
-run at. The loader needs the `mojito` extra; `decimate` needs no extra.
+run at. Neither the loader nor `decimate` needs an extra.
 
 ```python
 from enchilada import decimate, load_mojito_l1
@@ -797,7 +910,7 @@ for the current API, and the [translation notebook](examples/domain_translation.
 for converting data and block states between representations.
 
 ```sh
-uv sync --extra numeric-orbits --extra mojito   # dev group (pytest, pytest-cov, ruff, mypy)
+uv sync --extra numeric-orbits   # dev group (pytest, pytest-cov, ruff, mypy)
 uv run --no-sync pytest                    # full suite, incl. examples, orbit and Mojito loaders
 uv run --no-sync pytest --cov --cov-report=term-missing   # coverage (gate: 95%)
 uv run --no-sync mypy                      # enchilada ships py.typed; keep it honest
@@ -808,9 +921,10 @@ uv run --no-sync ruff format --check src tests examples benchmarks forge   # CI 
 CI runs lint, formatting, mypy, the suite behind a 95% coverage gate, artifact
 builds, and an installed-wheel smoke test across Python 3.12/3.13 on Linux and
 macOS, with core-only checks through Python 3.14. A separate Python 3.12 job tests
-the core at its dependency floors (NumPy 2.1.0, SciPy 1.14.1, domania 3.0.0)
-without h5py or lisaorbits; another job resolves the numeric-orbit and mojito
-dependency floors. Tag pushes matching `v*` run these gates before PyPI Trusted
+the core at its dependency floors (NumPy 2.1.0, SciPy 1.14.1, domania 3.0.0,
+h5py 3.12.1) without lisaorbits; another job resolves the numeric-orbit
+dependency floors (the `mojito` extra is kept only so `enchilada[mojito]`
+installs). Tag pushes matching `v*` run these gates before PyPI Trusted
 Publishing. Manual release dispatches build and validate artifacts without
 publishing, including on tags. See
 [CHANGELOG.md](https://github.com/AaronDJohnson/enchilada/blob/main/CHANGELOG.md) for release notes.
@@ -843,10 +957,11 @@ oversights:
   (1.5 times with 128; see the [forge README](forge/README.md)). Choose the
   rows for the narrowest spectral feature such a block must see; white noise
   is exact at any row count.
-- **No checkpoint file format or lifecycle end.** A restart requires the blocks'
-  sampler states, Wheel's accepted physical estimates, and the relevant RNG states
-  to be saved and restored consistently. Serialization, restoration, and resource
-  cleanup remain application responsibilities; a ledger snapshot alone is insufficient.
+- **No restart.** The campaign file records every block's parameters per step,
+  not the blocks' sampler states or the Wheel RNG, so a campaign cannot resume
+  from it and `Wheel(output_path=...)` refuses an existing file. Restarting
+  needs the blocks' sampler states, the Wheel's accepted states and its RNG
+  restored together; enchilada provides none of this yet.
 
 ## Scaling
 
@@ -881,7 +996,8 @@ transform 88 ms, `Covariance.copy` 118 ms, the translation onto the home grid
 88 ms, the hand-over translation 264 ms). The same noise total is translated
 once for every signal block off the home grid; it is not cached yet.
 
-Keep unbounded chains in a callback sink, outside `BlockState`. Run
+Chains belong in the campaign file (`output_path`), not in `BlockState`;
+`benchmark_wheel.py --record` measures the cost of recording. Run
 [the benchmark](benchmarks/benchmark_wheel.py) for a reproducible workload,
 cycle timings, and process peak memory usage (`--rows` sets its home grid). Its
 workload is the fixed signals plus one `FixedNoiseBlock` (`"noise_blocks": 1`

@@ -12,6 +12,11 @@ class AmplitudeUpdate:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return BlockState(parameters={"amplitudes": np.array([1.0])})
 
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(
+            parameters={"amplitudes": np.array(parameters["amplitudes"], dtype=float)}
+        )
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         current_block_state.parameters["amplitudes"] += 1
         return current_block_state

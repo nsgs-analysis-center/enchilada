@@ -18,10 +18,10 @@ import pytest
 CONSUMER = """
 from dataclasses import dataclass
 import numpy as np
-from typing import assert_type
+from typing import Any, assert_type
 from enchilada import (
     Block, L1Data, Covariance, BlockState, Wheel, WDMGrid, Grid,
-    FixedNoiseBlock, transform,
+    FixedNoiseBlock, L2Data, transform,
 )
 from enchilada.testing import EchoBlock, check_block
 
@@ -46,6 +46,16 @@ noise = Covariance.like(r, {"A": np.ones(8)})
 assert_type(noise.copy(), Covariance)
 assert_type(transform(noise, "wdm", num_frequency_divisions=2), Covariance)
 assert_type(transform(BlockState(), "time"), BlockState)
+recorded = Wheel(r, num_frequency_divisions=2, output_path="campaign.h5")
+live = recorded.l2
+assert live is not None
+assert_type(live.num_steps, int)
+assert_type(live.block_names, tuple[str, ...])
+assert_type(live.home_grid, Grid)
+with L2Data.open("campaign.h5", observed_data=r) as reader:
+    assert_type(reader.parameters("noise"), dict[str, Any])
+    assert_type(reader.chain("noise", "x"), np.ndarray)
+recorded.close()
 wheel = Wheel(r, num_frequency_divisions=2)
 wheel.add(FixedNoiseBlock("noise", noise))
 wheel.add(EchoBlock("wdm"), data_domain="wdm", num_time_divisions=2)
@@ -78,6 +88,11 @@ class RoleLess:
     ) -> BlockState:
         return BlockState()
 
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        return BlockState()
+
     def sample(
         self, conditional_residual: L1Data,
         covariance: Covariance | None,
@@ -87,6 +102,25 @@ class RoleLess:
 
 roleless: Block = RoleLess()   # no role: not a Block
 
+class NoRebuild:
+    name = "no_rebuild"
+    role = "signal"
+
+    def initial_sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def sample(
+        self, conditional_residual: L1Data,
+        covariance: Covariance | None,
+        current_block_state: BlockState, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return current_block_state
+
+no_rebuild: Block = NoRebuild()   # no state_from_parameters: not a Block
+
 @dataclass(frozen=True)
 class FrozenBlock:
     name: str = "frozen"
@@ -95,6 +129,11 @@ class FrozenBlock:
     def initial_sample(
         self, conditional_residual: L1Data,
         covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
     ) -> BlockState:
         return BlockState()
 
@@ -117,6 +156,11 @@ class ExplicitBlock(Block):
     def initial_sample(
         self, conditional_residual: L1Data,
         covariance: Covariance | None, *, rng: np.random.Generator,
+    ) -> BlockState:
+        return BlockState()
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
     ) -> BlockState:
         return BlockState()
 
@@ -161,9 +205,14 @@ def test_consumer_typos_are_static_errors(tmp_path):
         'Incompatible types in assignment (expression has type "RoleLess", '
         'variable has type "Block")'
     ) in out, out
+    # ... or one without state_from_parameters ...
+    assert (
+        'Incompatible types in assignment (expression has type "NoRebuild", '
+        'variable has type "Block")'
+    ) in out, out
     # ... and the removed warning class is not importable
     assert 'has no attribute "NoiseOverwrittenWarning"' in out, out
-    assert out.count("error:") == 5, out
+    assert out.count("error:") == 6, out
 
 
 @pytest.mark.skipif(
@@ -251,10 +300,26 @@ def test_block_protocol_is_runtime_checkable():
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return BlockState()
 
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState()
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
 
     assert not isinstance(RoleLess(), Block)
+
+    # a class without state_from_parameters is not a Block either
+    class NoRebuild:
+        name = "n"
+        role = "signal"
+
+        def initial_sample(self, conditional_residual, covariance, *, rng):
+            return None
+
+        def sample(self, conditional_residual, covariance, current_block_state, *, rng):
+            return current_block_state
+
+    assert not isinstance(NoRebuild(), Block)
 
 
 def test_frozen_dataclass_can_explicitly_inherit_block():
@@ -271,6 +336,9 @@ def test_frozen_dataclass_can_explicitly_inherit_block():
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return BlockState(parameters={"value": 1})
+
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
@@ -314,6 +382,7 @@ def test_public_surface_is_pinned():
         "NumericOrbit",
         "Orbit",
         "L1Data",
+        "L2Data",
         "BlockState",
         "Wheel",
         "WDMGrid",

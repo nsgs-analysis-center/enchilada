@@ -9,13 +9,13 @@ from enchilada.block_state import BlockState
 class Ledger:
     """Read-only access to each block's latest accepted BlockState.
 
-    Wheel alone records entries. Indexing deep-copies a state; `snapshot()`
+    Wheel alone writes entries. Indexing deep-copies a state; `snapshot()`
     deep-copies all states into a dictionary. Iteration yields block names.
     Ledger equality uses object identity; compare state values explicitly.
 
     This stores current physical estimates. Sampler continuation and diagnostics
-    stay on each block. Collect posterior history through Wheel's
-    on_cycle_complete callback.
+    stay on each block. The campaign file (`Wheel(output_path=...)`)
+    holds the posterior history; `on_cycle_complete` is for monitoring.
     """
 
     def __init__(self) -> None:

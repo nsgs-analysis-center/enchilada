@@ -1,5 +1,6 @@
 """NumericOrbit: interpolation, frames, loaders, and refusal to extrapolate."""
 
+import h5py
 import numpy as np
 import pytest
 
@@ -139,7 +140,6 @@ class TestFrames:
 
 class TestLoaders:
     def test_from_hdf5_round_trip(self, tmp_path):
-        h5py = pytest.importorskip("h5py")
         t, pos = circular_table(n=50)
         dt = t[1] - t[0]
         path = tmp_path / "orbit.h5"
@@ -227,7 +227,6 @@ class TestFromLisaorbitsGuard:
 
 def test_from_hdf5_preserves_a_gps_scale_epoch(tmp_path):
     """t0 must survive the load, not be silently zeroed or offset."""
-    h5py = pytest.importorskip("h5py")
     t0, dt, n = 1.2345e9, 15.0, 64  # GPS-scale start
     _, pos = circular_table(n=n)
     path = tmp_path / "orbit_gps.h5"

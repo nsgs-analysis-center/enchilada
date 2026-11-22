@@ -203,3 +203,36 @@ def transform(
             grid=target_grid,
         )
     raise TypeError("transform expects L1Data, BlockState or Covariance")
+
+
+def _data_on_grid(data: L1Data, grid: Grid) -> L1Data:
+    """`data` on `grid`: itself when already there, else its translation."""
+    if data.grid == grid:
+        return data
+    return transform(
+        data,
+        grid.data_domain,
+        num_frequency_divisions=(
+            None if grid.wdm_grid is None else grid.wdm_grid.num_frequency_divisions
+        ),
+    )
+
+
+def _state_on_grid(
+    state: BlockState, grid: Grid, *, reference_data: L1Data
+) -> BlockState:
+    """A block state built on `reference_data`'s grid, moved to `grid`.
+
+    The template moves by one exact transform and the covariance is kept, as
+    `transform` does; a state already on `grid` is returned as it is.
+    """
+    if reference_data.grid == grid:
+        return state
+    return transform(
+        state,
+        grid.data_domain,
+        reference_data=reference_data,
+        num_frequency_divisions=(
+            None if grid.wdm_grid is None else grid.wdm_grid.num_frequency_divisions
+        ),
+    )

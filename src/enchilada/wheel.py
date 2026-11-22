@@ -1,29 +1,32 @@
 """Orchestrator-owned data, accepted physical estimates, and the two sums."""
 
+import contextlib
+import os
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
-from typing import Literal
+from typing import Self
 
 import numpy as np
 
 from enchilada._sum_tree import NoiseSum, Signal, SignalSum
 from enchilada._transforms import transform_channels
+from enchilada.block import ROLES as ROLES
 from enchilada.block import Block
+from enchilada.block import Role as Role
 from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid, resolve_wdm_grid
+from enchilada.l2 import L2Data, _Encoded, _Recorder
 from enchilada.ledger import Ledger
 from enchilada.translation import _target_grid, transform
 
-Role = Literal["signal", "noise"]
-ROLES: tuple[Role, ...] = ("signal", "noise")
-
 _PROTOCOL = (
     "a Block needs name, role ('signal' or 'noise'), "
-    "initial_sample(conditional_residual, covariance, *, rng) and "
-    "sample(conditional_residual, covariance, current_block_state, *, rng)."
+    "initial_sample(conditional_residual, covariance, *, rng), "
+    "sample(conditional_residual, covariance, current_block_state, *, rng) and "
+    "state_from_parameters(parameters, reference_data)."
 )
 
 
@@ -78,6 +81,22 @@ class Wheel:
     Use separate block instances for separate campaigns. Earlier successful
     updates in a failed cycle remain committed. Exceptions in on_cycle_complete
     occur after that entire cycle has committed.
+
+    With `output_path` the Wheel records the campaign: every block's parameters
+    at registration (the block's entry 0) and after each complete cycle,
+    appended to an HDF5 file and flushed before `on_cycle_complete` runs;
+    `wheel.l2` reads it live and `L2Data.open` afterwards. The file also holds
+    the observation's grid and the home grid, and `L2Data` rebuilds templates
+    and the covariance sum on the home grid and the residual on the observation
+    grid, as the Wheel keeps and returns them. Parameters must then be
+    recordable (numeric scalars or arrays; key set, dtype kind and dimension
+    count fixed at registration; any shape per step); a state that is not is
+    refused like an off-grid template. A partial cycle records nothing (a block
+    added after one draws its start against in-memory states the file never
+    holds, so `residual` at that step is not the residual the block saw). If a
+    write fails, the campaign in memory is intact and one record ahead, the
+    file is consistent up to its last step, and the Wheel refuses further add
+    and run. `close()` or a `with` block closes the file.
     """
 
     def __init__(
@@ -87,6 +106,7 @@ class Wheel:
         num_frequency_divisions: int | None = None,
         num_time_divisions: int | None = None,
         random_seed: int | None = None,
+        output_path: str | os.PathLike[str] | None = None,
     ) -> None:
         """Initialize a campaign from observations on a WDM home grid.
 
@@ -102,6 +122,10 @@ class Wheel:
                 be positive even integers whose product is the sample count.
             random_seed: Seed for the campaign's NumPy generator. None requests
                 nondeterministic initialization.
+            output_path: Where to record the campaign: an HDF5 file the Wheel
+                creates now (an existing file raises FileExistsError) and
+                appends to at every registration and after every complete
+                cycle. None records nothing.
 
         The campaign has no covariance until a noise block publishes one at
         registration; a known noise model is a FixedNoiseBlock.
@@ -157,6 +181,19 @@ class Wheel:
         self._signal_sum = SignalSum()
         self._noise_sum = NoiseSum()
         self._rng = np.random.default_rng(random_seed)
+        self._recorder: _Recorder | None = None
+        self._l2: L2Data | None = None
+        self._pending: dict[str, _Encoded] = {}
+        if output_path is not None:
+            recorder = _Recorder.create(output_path, arrival, home_grid=home.grid)
+            try:
+                self._l2 = L2Data(recorder.file, observed_data=arrival, owns_file=False)
+            except BaseException:
+                recorder.close()
+                with contextlib.suppress(OSError):
+                    os.remove(output_path)
+                raise
+            self._recorder = recorder
 
     @staticmethod
     def _copy_data(data_to_copy: L1Data) -> L1Data:
@@ -209,6 +246,30 @@ class Wheel:
         """Live state store; indexing copies entries, snapshot() copies all entries."""
         return self._ledger
 
+    @property
+    def l2(self) -> L2Data | None:
+        """The live view of the campaign file, or None when no output_path was given."""
+        return self._l2
+
+    def close(self) -> None:
+        """Close the campaign file. Idempotent; a no-op without an output_path.
+
+        Afterwards `add` and `run` raise ValueError; read the finished file with
+        `L2Data.open`.
+        """
+        if self._recorder is not None:
+            self._recorder.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def _require_recordable(self) -> None:
+        if self._recorder is not None:
+            self._recorder.check_appendable(len(self._blocks))
+
     def _on_grid(self, home_data: L1Data, grid: Grid) -> L1Data:
         """Home-grid data on `grid`: an independent copy or one exact transform."""
         if grid == self._home_data.grid:
@@ -230,16 +291,18 @@ class Wheel:
         """Register a block under its declared role and adopt its initial_sample.
 
         block_to_register must have a unique name, a `role` attribute that is
-        "signal" or "noise", and implement initial_sample and sample. The role
-        is read here, once. A signal block publishes a template and never a
-        covariance; a noise block publishes a covariance on every call and
-        never a template. Failed registration leaves the campaign unchanged:
-        an exception from initial_sample, a return that is not a BlockState,
-        an off-grid or non-finite template, a field the role forbids or lacks,
-        a covariance on another grid than the block's, a covariance that does
-        not translate onto the home grid, or a state that cannot be
-        deep-copied leaves the ledger, the block list, the residual, both sums
-        and the Wheel RNG as they were.
+        "signal" or "noise", and implement initial_sample, sample and
+        state_from_parameters. The role is read here, once. A signal block
+        publishes a template and never a covariance; a noise block publishes a
+        covariance on every call and never a template. Failed registration
+        leaves the ledger, the block list, the residual, both sums, the Wheel
+        RNG and the file as they were. It fails on: an exception from
+        initial_sample; a return that is not a BlockState; an off-grid or
+        non-finite template; a field the role forbids or lacks; a covariance on
+        another grid than the block's; a covariance that does not translate
+        onto the home grid; a state that cannot be deep-copied; and, when
+        recording, parameters that cannot be recorded or a name that cannot
+        name an HDF5 group (checked before initial_sample).
 
         initial_sample receives the current working residual (the observations
         minus the adopted starts of every block registered so far) on this
@@ -264,6 +327,7 @@ class Wheel:
         it is another WDM grid, and the other count follows from the
         observation length (both must be even).
         """
+        self._require_recordable()
         block_grid = self._block_grid(
             data_domain, num_frequency_divisions, num_time_divisions
         )
@@ -272,16 +336,16 @@ class Wheel:
             raise ValueError(
                 f"block name must be a non-empty string, got {block_name!r}"
             )
+        if self._recorder is not None:
+            self._recorder.check_block_name(block_name)
         if block_name in self._ledger:
             raise ValueError(f"block name {block_name!r} already registered")
-        if not callable(getattr(block_to_register, "sample", None)):
-            raise TypeError(
-                f"block {block_name!r} does not implement sample; {_PROTOCOL}"
-            )
-        if not callable(getattr(block_to_register, "initial_sample", None)):
-            raise TypeError(
-                f"block {block_name!r} does not implement initial_sample; {_PROTOCOL}"
-            )
+        for method_name in ("sample", "initial_sample", "state_from_parameters"):
+            if not callable(getattr(block_to_register, method_name, None)):
+                raise TypeError(
+                    f"block {block_name!r} does not implement {method_name}; "
+                    f"{_PROTOCOL}"
+                )
         role = self._declared_role(block_to_register, block_name)
         conditional_residual, covariance = self._block_inputs(
             block_name, block_grid, role=role, registered=False
@@ -393,7 +457,8 @@ class Wheel:
         """Visit blocks in registration order; notify after each complete cycle.
 
         Cycle indices are local to this invocation. Multiple run calls continue
-        the accepted ledger and RNG; run(0) does nothing.
+        the accepted ledger and RNG; run(0) does nothing (a closed recording
+        still refuses).
 
         Args:
             num_cycles: Non-negative number of complete Gibbs cycles to attempt.
@@ -401,6 +466,9 @@ class Wheel:
                 after every block in a cycle has returned an accepted state.
                 Indices start at zero for each run call. Partial cycles do not
                 invoke the callback.
+
+        When recording, the cycle's entries are appended to the file before the
+        callback runs.
         """
         if (
             not isinstance(num_cycles, (int, np.integer))
@@ -410,7 +478,10 @@ class Wheel:
             raise ValueError(
                 f"num_cycles must be a non-negative integer, got {num_cycles!r}"
             )
+        self._require_recordable()
         for cycle_index in range(num_cycles):
+            self._require_recordable()
+            self._pending = {}
             for block_name, block in self._blocks:
                 candidate_rng = deepcopy(self._rng)
                 block_grid = self._block_domains[block_name]
@@ -440,6 +511,8 @@ class Wheel:
                     role=role,
                     block_grid=block_grid,
                 )
+            if self._recorder is not None:
+                self._recorder.append_step(self._pending)
             if on_cycle_complete is not None:
                 on_cycle_complete(cycle_index, self)
 
@@ -521,6 +594,8 @@ class Wheel:
         block_to_register is supplied only when adopting a new block's initial state.
         block_grid is the grid the block is registered on: a published template
         or covariance must be on it, and is brought onto the home grid here.
+        When recording, parameters are encoded before the commit and written
+        after it.
         """
         if not isinstance(new_block_state, BlockState):
             raise TypeError(
@@ -618,6 +693,12 @@ class Wheel:
                 target_wdm_grid=home.wdm_grid,
             )
             candidate_block_state = replace(candidate_block_state, template=signal)
+        encoded = self._encode_for_file(
+            block_name,
+            source_method_name,
+            candidate_block_state.parameters,
+            registering=block_to_register is not None,
+        )
         candidate_block_states = {
             **self._ledger._states_by_block_name,
             block_name: candidate_block_state,
@@ -645,7 +726,8 @@ class Wheel:
             else {**self._roles, block_name: role}
         )
         next_rng = deepcopy(candidate_rng)
-        # All potentially failing work is done.
+        # Validation is done; commit memory, then write the file. A write error
+        # leaves memory one record ahead and latches the recorder.
         self._ledger._states_by_block_name = candidate_block_states
         self._working_residual = candidate_residual
         self._signal_sum = candidate_signal_sum
@@ -655,3 +737,46 @@ class Wheel:
         self._roles = candidate_roles
         self._rng = next_rng
         self._blocks = next_blocks
+        self._record_adopted(
+            block_name,
+            encoded,
+            role=role,
+            index=block_index,
+            grid=block_grid,
+            registering=block_to_register is not None,
+        )
+
+    def _encode_for_file(
+        self,
+        block_name: str,
+        source_method_name: str,
+        parameters: dict[str, object],
+        *,
+        registering: bool,
+    ) -> _Encoded | None:
+        """Validate parameters against the recordable rules; None when not recording."""
+        if self._recorder is None:
+            return None
+        return self._recorder.encode(
+            block_name, source_method_name, parameters, registering=registering
+        )
+
+    def _record_adopted(
+        self,
+        block_name: str,
+        encoded: _Encoded | None,
+        *,
+        role: Role,
+        index: int,
+        grid: Grid,
+        registering: bool,
+    ) -> None:
+        """Write a registration now, or queue a cycle's entry for append_step."""
+        if encoded is None or self._recorder is None:
+            return
+        if registering:
+            self._recorder.add_block(
+                block_name, role=role, index=index, grid=grid, encoded=encoded
+            )
+        else:
+            self._pending[block_name] = encoded

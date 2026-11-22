@@ -17,11 +17,15 @@ data_domain="time"; the floor may be published on any grid, since Wheel
 translates it onto the home grid and hands it to the excess block translated
 onto that time grid (exact for a white floor). One excess variance is shared
 across all channels. ExcessNoiseBlock refuses a None floor, so it must be
-registered after another noise block. Run with:
+registered after another noise block. The Wheel records both blocks to a
+campaign file and the excess-variance chain is read back from it with
+`wheel.l2`. Run with:
 
     uv run --no-sync python examples/noise_floor.py
 """
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -85,10 +89,14 @@ class ExcessNoiseBlock:
             },
         )
 
-    def _render(self, conditional_residual: L1Data, variance: float) -> BlockState:
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """The block's own covariance at the given variance on the time grid."""
+        variance = float(parameters["variance"])
         return BlockState(
-            covariance=self._own(conditional_residual, variance),
-            parameters={"variance": float(variance)},
+            covariance=self._own(reference_data, variance),
+            parameters={"variance": variance},
         )
 
     def _log_likelihood(
@@ -130,7 +138,9 @@ class ExcessNoiseBlock:
         """Draw the excess variance from its log-uniform prior and publish it."""
         self._require_floor(covariance)
         log_variance = rng.uniform(np.log(self.low), np.log(self.high))
-        return self._render(conditional_residual, float(np.exp(log_variance)))
+        return self.state_from_parameters(
+            {"variance": float(np.exp(log_variance))}, conditional_residual
+        )
 
     def sample(
         self,
@@ -160,7 +170,9 @@ class ExcessNoiseBlock:
             )
             if rng.random() < np.exp(min(0.0, proposed - current)):
                 log_variance, current = proposal, proposed
-        return self._render(conditional_residual, float(np.exp(log_variance)))
+        return self.state_from_parameters(
+            {"variance": float(np.exp(log_variance))}, conditional_residual
+        )
 
 
 def make_observed(seed: int = 0) -> L1Data:
@@ -180,18 +192,17 @@ def make_observed(seed: int = 0) -> L1Data:
 def run_example(
     n_cycles: int = 400, burn_in: int = 100, seed: int = 0
 ) -> dict[str, Any]:
-    """Run the campaign; return the excess posterior summary and the Wheel."""
+    """Run the campaign; return the excess posterior summary and the Wheel.
+
+    The Wheel records to a campaign file in a temporary directory removed at
+    return, and the chain is read back from it; the returned Wheel is closed.
+    """
     if not 0 <= burn_in < n_cycles:
         raise ValueError("burn_in must be nonnegative and smaller than n_cycles")
     observed = make_observed(seed)
     # Seed the campaign from a child of the observation seed so registration and
     # sampling never replay the observation-noise draws.
     campaign_seed = np.random.SeedSequence(seed).spawn(1)[0]
-    wheel = Wheel(
-        observed,
-        num_frequency_divisions=32,  # the WDM home grid: 32 rows x 64 columns
-        random_seed=int(campaign_seed.generate_state(1)[0]),
-    )
     floor = Covariance.like(
         observed,
         {
@@ -199,25 +210,35 @@ def run_example(
             for ch in observed.channel_names
         },
     )
-    # Both are noise blocks. The floor must go first because the excess block
-    # refuses to start without it; Wheel keeps floor + excess as the campaign
-    # covariance on its home grid.
-    wheel.add(FixedNoiseBlock("floor", floor))
-    wheel.add(ExcessNoiseBlock("excess"))
-    chain: list[float] = []
+    with tempfile.TemporaryDirectory() as directory:
+        with Wheel(
+            observed,
+            num_frequency_divisions=32,  # the WDM home grid: 32 rows x 64 columns
+            random_seed=int(campaign_seed.generate_state(1)[0]),
+            output_path=Path(directory) / "noise_floor.h5",
+        ) as wheel:
+            # Both are noise blocks. The floor must go first because the excess
+            # block refuses to start without it; Wheel keeps floor + excess as the
+            # campaign covariance on its home grid.
+            wheel.add(FixedNoiseBlock("floor", floor))
+            wheel.add(ExcessNoiseBlock("excess"))
 
-    def collect(cycle: int, w: Wheel) -> None:
-        chain.append(w.ledger["excess"].parameters["variance"])
-        if (cycle + 1) % 100 == 0:
-            # The campaign covariance is on the home grid; read it on the time grid.
-            total = transform(w.covariance, "time").A[0]
-            print(
-                f"cycle {cycle + 1:4d}: excess variance draw = {chain[-1]:.4f}  "
-                f"(campaign covariance A[0] = {total:.4f})"
-            )
+            def report(cycle: int, w: Wheel) -> None:
+                if (cycle + 1) % 100 == 0:
+                    draw = w.ledger["excess"].parameters["variance"]
+                    # The campaign covariance is on the home grid; read it on
+                    # the time grid.
+                    total = transform(w.covariance, "time").A[0]
+                    print(
+                        f"cycle {cycle + 1:4d}: excess variance draw = {draw:.4f}  "
+                        f"(campaign covariance A[0] = {total:.4f})"
+                    )
 
-    wheel.run(n_cycles, on_cycle_complete=collect)
-    samples = np.asarray(chain[burn_in:])
+            wheel.run(n_cycles, on_cycle_complete=report)
+            l2 = wheel.l2
+            assert l2 is not None  # the Wheel was given an output_path
+            # Entry 0 is the start; entries 1..n_cycles follow the cycles.
+            samples = l2.chain("excess", "variance")[burn_in + 1 :]
     return {
         "posterior_mean": float(samples.mean()),
         "posterior_std": float(samples.std()),

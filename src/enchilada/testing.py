@@ -1,15 +1,19 @@
 """Helpers for checking the Wheel/Block exchange contract end to end."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
 
 from enchilada.block import Block
-from enchilada.block_state import BlockState
+from enchilada.block_state import BlockState, check_on_grid
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
+from enchilada.domains import Grid
+from enchilada.l2 import STORED_DTYPES
+from enchilada.translation import _state_on_grid
 from enchilada.wheel import Wheel
 
 
@@ -46,6 +50,12 @@ class EchoBlock:
         """Publish an empty physical state; the counter and the RNG are untouched."""
         return BlockState()
 
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """Rebuild the empty state; EchoBlock publishes no signal and no parameters."""
+        return BlockState()
+
     def sample(
         self,
         conditional_residual: L1Data,
@@ -72,6 +82,132 @@ class EchoBlock:
         return BlockState()
 
 
+def _close_enough(actual: np.ndarray, expected: np.ndarray) -> bool:
+    """Relative 1e-9 agreement, scaled by the published array's largest entry."""
+    if actual.shape != expected.shape:
+        return False
+    scale = float(np.max(np.abs(expected))) if expected.size else 0.0
+    return bool(np.allclose(actual, expected, rtol=1e-9, atol=1e-9 * scale))
+
+
+def _covariance_close(actual: np.ndarray, expected: np.ndarray) -> bool:
+    """Pointwise agreement to 1e-9 of the Cauchy-Schwarz bound sqrt(C_ii C_jj).
+
+    One scale for the whole array would let a quiet channel or a quiet band
+    drift unnoticed beside a loud one; every diagonal is positive, so this
+    bound is never zero, and exactly-zero cross terms tolerate round-off.
+    """
+    if actual.shape != expected.shape:
+        return False
+    variances = np.real(np.einsum("ii...->i...", expected))
+    bound = np.sqrt(variances[:, None] * variances[None, :])
+    return bool(np.all(np.abs(actual - expected) <= 1e-9 * bound))
+
+
+def _zeroed(data: L1Data) -> L1Data:
+    """`data`'s grid with every channel value set to zero.
+
+    `state_from_parameters` may read only grid metadata, so the round trip
+    hands it a reference whose values would betray a block that reads them:
+    `L2Data` rebuilds states from exactly such a reference when no observation
+    is attached, so a rebuild that reads channel values fails here. (`L2Data`'s
+    reference also has no orbit; this one keeps the data's.)
+    """
+    zeros = {name: np.zeros_like(values) for name, values in data.channel_data.items()}
+    for values in zeros.values():
+        values.flags.writeable = False  # as `L2Data` hands it: a rebuild cannot edit it
+    return replace(data, channel_data=zeros)
+
+
+def _as_read_back(parameters: dict[str, Any]) -> dict[str, Any]:
+    """`parameters` as `L2Data` hands them back: numpy scalars and arrays.
+
+    A fresh copy every time, so a rebuild that mutates its argument cannot
+    disturb the next check. Values a campaign file cannot hold (strings,
+    nested dicts) pass through as deep copies; the file would have refused
+    them when they are published.
+    """
+    read_back: dict[str, Any] = {}
+    for key, value in parameters.items():
+        try:
+            array = np.array(value)
+        except ValueError:  # a ragged list: allowed in memory, not recordable
+            read_back[key] = deepcopy(value)
+            continue
+        if array.dtype.kind in STORED_DTYPES:
+            read_back[key] = np.asarray(array, dtype=STORED_DTYPES[array.dtype.kind])[
+                ()
+            ]
+        else:
+            read_back[key] = deepcopy(value)
+    return read_back
+
+
+def _check_round_trip(
+    block: Block, entry: BlockState, reference: L1Data, home_grid: Grid, where: str
+) -> None:
+    """Rebuild `entry` from its parameters on `reference` and compare the two.
+
+    The ledger keeps a template on the home grid, so the rebuilt one is moved
+    there first, as the Wheel moves a published template; a covariance stays on
+    the grid it was published on in both.
+    """
+    rebuilt = block.state_from_parameters(_as_read_back(entry.parameters), reference)
+    if not isinstance(rebuilt, BlockState):
+        raise TypeError(
+            f"{block.name}.state_from_parameters must return a BlockState, got "
+            f"{type(rebuilt).__name__}"
+        )
+    if rebuilt.template is not None:
+        check_on_grid(
+            rebuilt.template,
+            channel_names=reference.channel_names,
+            num_time_samples=reference.num_time_samples,
+            data_domain=reference.data_domain,
+            wdm_grid=reference.wdm_grid,
+            context_label=f"{block.name}.state_from_parameters at {where}: template",
+        )
+        rebuilt = _state_on_grid(rebuilt, home_grid, reference_data=reference)
+    published, again = entry.template or {}, rebuilt.template or {}
+    if set(published) != set(again):
+        raise ValueError(
+            f"{block.name}.state_from_parameters does not reproduce the published "
+            f"template at {where}: rebuilt channels {sorted(again)}, published "
+            f"{sorted(published)}; parameters must determine the template"
+        )
+    for channel in published:
+        if not _close_enough(again[channel], published[channel]):
+            raise ValueError(
+                f"{block.name}.state_from_parameters does not reproduce the "
+                f"published template in channel {channel!r} at {where}: "
+                "parameters must determine the template"
+            )
+    noise, noise_again = entry.covariance, rebuilt.covariance
+    prefix = (
+        f"{block.name}.state_from_parameters does not reproduce the published "
+        f"covariance at {where}"
+    )
+    if noise is None and noise_again is not None:
+        raise ValueError(
+            f"{prefix}: the rebuild has one but the published state has none"
+        )
+    if noise is not None:
+        if noise_again is None:
+            raise ValueError(f"{prefix}: the rebuild has none")
+        if noise_again.channel_names != noise.channel_names:
+            raise ValueError(
+                f"{prefix}: channels {noise_again.channel_names} differ from the "
+                f"published {noise.channel_names}"
+            )
+        if noise_again.grid != noise.grid:
+            raise ValueError(
+                f"{prefix}: grid {noise_again.grid} differs from the published "
+                f"{noise.grid}"
+            )
+        if not _covariance_close(noise_again.blocks, noise.blocks):
+            raise ValueError(f"{prefix}: parameters must determine the covariance")
+
+
 def check_block(
     block_under_test: Block,
     observed_data: L1Data,
@@ -89,7 +225,20 @@ def check_block(
     ``observed_data``, then calls ``sample`` for ``num_cycles``, passing
     accepted state into each call. Wheel validates the start and every sample
     alike: the signal grid, finiteness, the declared role's rules and any
-    published Covariance.
+    published Covariance. After registration (step 0) and after every cycle it
+    also calls the block's ``state_from_parameters`` with the ledger entry's
+    parameters, handed over as numpy scalars and arrays as a campaign file
+    returns them, and a zero-valued copy of the observation (grid metadata only,
+    as ``L2Data`` does when no observation is attached; ``L2Data``'s copy has no
+    orbit, this one keeps the data's), so a rebuild that reads channel values
+    fails. It requires the result, its template moved onto the home grid as the
+    Wheel moves a published one, to reproduce the ledger entry's template and
+    covariance to a relative 1e-9. After the run it rebuilds the step-0 entry
+    once more, so a rebuild that depends on the block's own sampling state fails
+    too. It raises ``TypeError`` for a result that is not a ``BlockState`` or a
+    template of the wrong kind, and otherwise ``ValueError`` naming the block,
+    the step and (for a template) the channel: the published parameters must
+    determine the published state.
 
     Args:
         block_under_test: Configured block whose exchange contract is checked.
@@ -132,7 +281,26 @@ def check_block(
         num_time_divisions=num_time_divisions,
         random_seed=random_seed,
     )
+    reference = _zeroed(observed_data)
+    home_grid = wheel.home_grid
     for noise_block in noise_blocks:
         wheel.add(block_to_register=noise_block)
     wheel.add(block_to_register=block_under_test)
-    wheel.run(num_cycles=num_cycles)
+    first_entry = wheel.ledger[block_under_test.name]
+    _check_round_trip(block_under_test, first_entry, reference, home_grid, "step 0")
+
+    def verify(cycle_index: int, campaign: Wheel) -> None:
+        entry = campaign.ledger[block_under_test.name]
+        _check_round_trip(
+            block_under_test, entry, reference, home_grid, f"step {cycle_index + 1}"
+        )
+
+    wheel.run(num_cycles=num_cycles, on_cycle_complete=verify)
+    if num_cycles > 0:
+        _check_round_trip(
+            block_under_test,
+            first_entry,
+            reference,
+            home_grid,
+            f"step 0, rebuilt again after {num_cycles} cycles",
+        )

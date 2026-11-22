@@ -20,7 +20,12 @@ class BlockState:
 
     `parameters` holds the physical values used to produce the template and
     covariance. Values must support deepcopy: Wheel snapshots them on adoption
-    and before each call. These are complete snapshots, not incremental changes.
+    and before each call. A recording campaign (`Wheel(output_path=...)`) writes
+    `parameters` to its file at registration and after every complete cycle.
+    Values must then be numeric scalars or arrays, keys must be strings that can
+    name an HDF5 dataset, the key set and each key's dtype kind and number of
+    dimensions are fixed at registration, and shapes may change between calls.
+    These are complete snapshots, not incremental changes.
     Sampler continuation state, diagnostics, and resources belong to the block's
     own State object; they are not published to the ledger.
 

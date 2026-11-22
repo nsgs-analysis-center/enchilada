@@ -13,8 +13,9 @@ import numpy as np
 import pytest
 
 from conftest import const_block_state, make_observed, starting_at, white_covariance
-from enchilada import BlockState, Covariance, FixedNoiseBlock, Wheel, transform
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L2Data, Wheel, transform
 from enchilada.testing import EchoBlock
+from enchilada.wheel import _PROTOCOL
 
 CLOSE = {"rtol": 1e-12, "atol": 1e-12}
 
@@ -44,6 +45,9 @@ class ConstBlock:
             self._block_state(conditional_residual), parameters={"value": self.value}
         )
 
+    def state_from_parameters(self, parameters, reference_data):
+        return replace(self._block_state(reference_data), parameters=dict(parameters))
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
         return replace(
@@ -69,14 +73,18 @@ class LevelNoiseBlock:
         self.state = self.State()
 
     def initial_sample(self, conditional_residual, covariance, *, rng):
-        return conditional_residual.block_state().with_covariance(
-            white_covariance(conditional_residual, 1.0)
+        return self.state_from_parameters({"level": 1.0}, conditional_residual)
+
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(
+            covariance=white_covariance(reference_data, float(parameters["level"])),
+            parameters=dict(parameters),
         )
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
-        return conditional_residual.block_state().with_covariance(
-            white_covariance(conditional_residual, float(self.state.updates + 1))
+        return self.state_from_parameters(
+            {"level": float(self.state.updates + 1)}, conditional_residual
         )
 
 
@@ -130,6 +138,10 @@ class TestLedger:
 
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 return BlockState()
+
+            def state_from_parameters(self, parameters, reference_data):
+                # Stub: no test rebuilds this block's state.
+                return BlockState(parameters=dict(parameters))
 
             def sample(
                 self,
@@ -573,6 +585,36 @@ class TestOnCycle:
 class TestBoundaryGuards:
     """The Wheel refuses returns that would silently corrupt other blocks."""
 
+    def test_missing_state_from_parameters_is_caught_before_initial_sample(
+        self, observed
+    ):
+        calls = []
+
+        class NoRebuild:
+            name = "norebuild"
+
+            def initial_sample(self, conditional_residual, covariance, *, rng):
+                calls.append("initial_sample")
+                return BlockState()
+
+            def sample(
+                self, conditional_residual, covariance, current_block_state, *, rng
+            ):
+                return current_block_state
+
+        wheel = Wheel(observed, num_frequency_divisions=8)
+        with pytest.raises(TypeError) as excinfo:
+            wheel.add(NoRebuild())
+        assert str(excinfo.value) == (
+            "block 'norebuild' does not implement state_from_parameters; a Block "
+            "needs name, role ('signal' or 'noise'), "
+            "initial_sample(conditional_residual, covariance, *, rng), "
+            "sample(conditional_residual, covariance, current_block_state, *, rng) "
+            "and state_from_parameters(parameters, reference_data)."
+        )
+        assert calls == []
+        assert len(wheel.ledger) == 0
+
     def test_a_signal_block_does_not_disturb_the_noise_model(self, rng):
         """A signal block never publishes a covariance, so the noise sum is
         exactly the home-grid translation of what the noise blocks published."""
@@ -611,8 +653,11 @@ class TestBoundaryGuards:
         class NoSample:
             name = "nosample"
 
-        with pytest.raises(TypeError, match="does not implement sample"):
+        with pytest.raises(TypeError) as excinfo:
             Wheel(observed, num_frequency_divisions=8).add(NoSample())
+        assert str(excinfo.value) == (
+            f"block 'nosample' does not implement sample; {_PROTOCOL}"
+        )
 
     def test_block_with_name_initial_sample_and_sample_can_register(self, observed):
         class Minimal:
@@ -621,6 +666,9 @@ class TestBoundaryGuards:
 
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 return BlockState()
+
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState(parameters=dict(parameters))
 
             def sample(
                 self,
@@ -771,6 +819,10 @@ def test_cached_signal_sums_follow_updates_withdrawals_and_failures(rng):
 
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return const_block_state(conditional_residual, np.finfo(float).max)
+
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
@@ -923,6 +975,9 @@ class TestDocumentedContracts:
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 return partly_zero_result(conditional_residual)
 
+            def state_from_parameters(self, parameters, reference_data):
+                return partly_zero_result(reference_data)
+
             def sample(
                 self,
                 conditional_residual,
@@ -952,6 +1007,9 @@ class TestDocumentedContracts:
         class Anonymous:
             def initial_sample(self, conditional_residual, covariance, *, rng):
                 return BlockState()
+
+            def state_from_parameters(self, parameters, reference_data):
+                return BlockState(parameters=dict(parameters))
 
             def sample(
                 self,
@@ -1073,3 +1131,44 @@ class TestObservedDataIsChecked:
         assert type(wheel._noise_sum.total) is Covariance
         assert wheel._noise_sum.total is not compatible
         assert type(wheel.ledger["noise"].covariance) is Covariance
+
+
+class _Poke(EchoBlock):
+    """A rebuild that writes into the reference it is handed."""
+
+    def state_from_parameters(self, parameters, reference_data):
+        reference_data.channel_data["A"][0] = 123.0
+        return super().state_from_parameters(parameters, reference_data)
+
+
+@pytest.mark.parametrize("data_domain", [None, "wdm"])
+class TestRecordingViews:
+    def test_a_rebuild_cannot_edit_the_wheels_observation(
+        self, observed, tmp_path, data_domain
+    ):
+        with Wheel(
+            observed, num_frequency_divisions=8, output_path=tmp_path / "c.h5"
+        ) as wheel:
+            block = _Poke("poke")
+            wheel.add(block, data_domain=data_domain)
+            before = wheel.observed_data
+            assert wheel.l2 is not None
+            with pytest.raises(ValueError, match="read-only"):
+                wheel.l2.states(0, [block])
+            for ch, values in before.channel_data.items():
+                np.testing.assert_array_equal(
+                    wheel.observed_data.channel_data[ch], values
+                )
+
+    def test_a_second_reader_can_open_the_file_while_recording(
+        self, observed, tmp_path, data_domain
+    ):
+        path = tmp_path / "c.h5"
+        with Wheel(observed, num_frequency_divisions=8, output_path=path) as wheel:
+            wheel.add(EchoBlock("echo"), data_domain=data_domain)
+            wheel.run(1)
+            with L2Data.open(path) as reader:
+                assert reader.num_steps == 1
+                assert reader.home_grid == wheel.home_grid
+            wheel.run(1)
+            assert wheel.l2 is not None and wheel.l2.num_steps == 2

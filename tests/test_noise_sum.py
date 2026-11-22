@@ -35,6 +35,9 @@ class ConstSignal:
     def initial_sample(self, conditional_residual, covariance, *, rng):
         return const_block_state(conditional_residual, self.value)
 
+    def state_from_parameters(self, parameters, reference_data):
+        return const_block_state(reference_data, self.value)
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.updates += 1
         return const_block_state(conditional_residual, self.value)
@@ -66,6 +69,12 @@ class WhiteNoise:
         return BlockState(
             covariance=white_covariance(conditional_residual, self.level),
             parameters={"level": self.level},
+        )
+
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(
+            covariance=white_covariance(reference_data, float(parameters["level"])),
+            parameters={"level": parameters["level"]},
         )
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -125,6 +134,10 @@ def offender(declared, method, *, with_template, with_covariance):
         def initial_sample(self, conditional_residual, covariance, *, rng):
             make = self._offending if method == "initial_sample" else self._allowed
             return make(conditional_residual)
+
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             make = self._offending if method == "sample" else self._allowed

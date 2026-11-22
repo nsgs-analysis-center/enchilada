@@ -110,6 +110,10 @@ def test_valid_rfft_signal_preserves_all_allowed_components(observed, num_time_s
         role = "signal"
         name = "signal"
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
 
@@ -142,6 +146,12 @@ class NoiseOnly:
             parameters={"variance": 1},
         )
 
+    def state_from_parameters(self, parameters, reference_data):
+        return reference_data.block_state(
+            covariance=white_covariance(reference_data, parameters["variance"]),
+            parameters=dict(parameters),
+        )
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.steps += 1
         self.state.draw = rng.normal()
@@ -171,6 +181,15 @@ class SignalOnly:
                 for ch, samples in conditional_residual.channel_data.items()
             },
             parameters={"amplitude": 0.5},
+        )
+
+    def state_from_parameters(self, parameters, reference_data):
+        return reference_data.block_state(
+            template={
+                ch: np.full_like(samples, parameters["amplitude"])
+                for ch, samples in reference_data.channel_data.items()
+            },
+            parameters=dict(parameters),
         )
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
@@ -306,6 +325,10 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
         def initial_sample(self, conditional_residual, covariance, *, rng):
             return population_start(conditional_residual)
 
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
+
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             for channel, samples in observed.channel_data.items():
                 np.testing.assert_allclose(
@@ -345,6 +368,10 @@ def test_absent_signal_removes_previous_contribution_and_can_return(observed, do
 class Baseline:
     role = "signal"
     name = "baseline"
+
+    def state_from_parameters(self, parameters, reference_data):
+        # Stub: no test rebuilds this block's state.
+        return BlockState(parameters=dict(parameters))
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         return current_block_state

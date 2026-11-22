@@ -70,6 +70,9 @@ class LevelSignal:
         self.state.received.append((conditional_residual, covariance))
         return level_state(conditional_residual, self.value)
 
+    def state_from_parameters(self, parameters, reference_data):
+        return level_state(reference_data, self.value)
+
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.state.received.append((conditional_residual, covariance))
         self.state.states.append(current_block_state)
@@ -94,6 +97,9 @@ class WhiteNoise:
         self.received.append((covariance, None))
         self.published.append(self._publish(conditional_residual))
         return BlockState(covariance=self.published[-1])
+
+    def state_from_parameters(self, parameters, reference_data):
+        return BlockState(covariance=self._publish(reference_data))
 
     def sample(self, conditional_residual, covariance, current_block_state, *, rng):
         self.received.append((covariance, current_block_state))
@@ -612,6 +618,10 @@ class TestDeclaredRoles:
                     "add must refuse the role before starting the block"
                 )
 
+            def state_from_parameters(self, parameters, reference_data):
+                # Stub: no test rebuilds this block's state.
+                return BlockState(parameters=dict(parameters))
+
             def sample(
                 self, conditional_residual, covariance, current_block_state, *, rng
             ):
@@ -633,6 +643,9 @@ class TestDeclaredRoles:
             assert message.startswith("block 'plain' declares no role; ")
             assert "role ('signal' or 'noise')" in message
             assert "initial_sample(conditional_residual, covariance, *, rng)" in message
+            assert message.endswith(
+                "state_from_parameters(parameters, reference_data)."
+            )
         with pytest.raises(TypeError, match="does not implement sample"):
             wheel.add(NoSample())  # the protocol checks still come first
         assert not isinstance(NoRole(), Block)

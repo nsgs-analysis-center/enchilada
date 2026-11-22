@@ -12,15 +12,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytest.importorskip("h5py", reason="the forge loads Mojito-layout files with h5py")
-
-from conftest import (  # noqa: E402
+from conftest import (
     MOJITO_DT,
     MOJITO_T0,
     white_covariance,
     write_mojito_file,
 )
-from enchilada import Covariance, L1Data, decimate, load_mojito_l1, transform  # noqa: E402
+from enchilada import Covariance, L1Data, decimate, load_mojito_l1, transform
 
 FORGE = Path(__file__).resolve().parents[1] / "forge"
 FILE_SAMPLES = 4096  # 1024 s at the fixture's 4 Hz
@@ -657,7 +655,7 @@ def matplotlib_config_dir(tmp_path_factory):
     return tmp_path_factory.mktemp("matplotlib")
 
 
-def run_notebook(name, config_dir, *, with_matplotlib):
+def run_notebook(name, config_dir, tmp_dir, *, with_matplotlib):
     """Run a notebook's code cells in one process, each compiled under its cell
     id so a traceback names the cell; with matplotlib blocked when asked."""
     if with_matplotlib:
@@ -676,7 +674,12 @@ def run_notebook(name, config_dir, *, with_matplotlib):
     result = subprocess.run(
         [sys.executable, "-c", code],
         cwd=FORGE,
-        env={**os.environ, "MPLBACKEND": "Agg", "MPLCONFIGDIR": str(config_dir)},
+        env={
+            **os.environ,
+            "MPLBACKEND": "Agg",
+            "MPLCONFIGDIR": str(config_dir),
+            "TMPDIR": str(tmp_dir),  # campaign files stay under pytest's tmp_path
+        },
         capture_output=True,
         text=True,
         timeout=300,
@@ -692,10 +695,10 @@ WITH_MATPLOTLIB = pytest.mark.parametrize(
 
 @WITH_MATPLOTLIB
 def test_block_notebook_runs_on_the_simulated_file(
-    simulated_file, matplotlib_config_dir, with_matplotlib
+    simulated_file, matplotlib_config_dir, tmp_path, with_matplotlib
 ):
     out = run_notebook(
-        "block.ipynb", matplotlib_config_dir, with_matplotlib=with_matplotlib
+        "block.ipynb", matplotlib_config_dir, tmp_path, with_matplotlib=with_matplotlib
     )
     assert "frequency grid, channels ('A', 'E')" in out, out
     assert "check_block passed" in out, out
@@ -703,10 +706,10 @@ def test_block_notebook_runs_on_the_simulated_file(
 
 @WITH_MATPLOTLIB
 def test_wheel_notebook_runs_on_the_simulated_file(
-    simulated_file, matplotlib_config_dir, with_matplotlib
+    simulated_file, matplotlib_config_dir, tmp_path, with_matplotlib
 ):
     out = run_notebook(
-        "wheel.ipynb", matplotlib_config_dir, with_matplotlib=with_matplotlib
+        "wheel.ipynb", matplotlib_config_dir, tmp_path, with_matplotlib=with_matplotlib
     )
     assert "posterior amplitude:" in out, out
     assert "residual rms after the run" in out, out

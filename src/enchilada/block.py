@@ -1,12 +1,15 @@
 """The boundary between a model's local state and its published estimates."""
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
 from enchilada.block_state import BlockState
 from enchilada.covariance import Covariance
 from enchilada.data import L1Data
+
+Role = Literal["signal", "noise"]
+ROLES: tuple[Role, ...] = ("signal", "noise")
 
 
 @runtime_checkable
@@ -25,6 +28,8 @@ class Block(Protocol):
     block that starts at a known point takes that point in its constructor and
     returns it from `initial_sample`; a block that starts from its prior draws
     from `rng`.
+    `state_from_parameters` rebuilds the published state from its parameters
+    alone, so a campaign file can store parameters only.
 
     `conditional_residual` is the observed data minus every OTHER block's current
     signal; this block's signal is still present. The block does not perform
@@ -94,4 +99,27 @@ class Block(Protocol):
         rng: np.random.Generator,
     ) -> BlockState:
         """Advance the supplied state and return the complete new block state."""
+        ...
+
+    def state_from_parameters(
+        self, parameters: dict[str, Any], reference_data: L1Data
+    ) -> BlockState:
+        """Rebuild this block's complete physical state from one parameter set.
+
+        Return the template (signal block) or covariance (noise block) these
+        parameters describe, with `parameters` on the result. Compute it from
+        `parameters`, the block's constructor configuration and
+        `reference_data`'s grid metadata only (domain, sample count, rate,
+        start time, channel names, WDM grid and orbit); never from
+        `reference_data`'s channel values, a random stream or state that
+        `sample` changes. `reference_data` is on the block's registered grid,
+        the grid `sample` receives. Read back from a campaign file, a float
+        arrives as `np.float64`, an int as `np.int64`, a bool as `np.bool_` and
+        a list as an ndarray, so avoid list operations and `isinstance(x, int)`
+        or `isinstance(x, bool)`. The simplest way to meet
+        `check_block`'s 1e-9 round trip is for `initial_sample` and `sample` to
+        end by calling this method. `L2Data` uses it to turn recorded
+        parameters back into states and residuals; the Wheel never calls it
+        during sampling.
+        """
         ...

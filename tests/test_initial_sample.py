@@ -17,6 +17,7 @@ from enchilada import (
     transform,
 )
 from enchilada.testing import check_block
+from enchilada.wheel import _PROTOCOL
 
 
 @pytest.fixture
@@ -52,20 +53,25 @@ class StartingBlock:
 
     def initial_sample(self, conditional_residual, covariance, *, rng):
         self.state.starts.append((conditional_residual, covariance, rng))
-        time_reference = transform(conditional_residual, "time")
-        start = time_reference.block_state(
-            {"A": np.full(time_reference.num_time_samples, self.amplitude)},
-            parameters={"amplitude": self.amplitude},
+        return self.state_from_parameters(
+            {"amplitude": self.amplitude}, conditional_residual
         )
-        grid = conditional_residual.wdm_grid
+
+    def state_from_parameters(self, parameters, reference_data):
+        time_reference = transform(reference_data, "time")
+        state = time_reference.block_state(
+            {"A": np.full(time_reference.num_time_samples, parameters["amplitude"])},
+            parameters={"amplitude": parameters["amplitude"]},
+        )
+        grid = reference_data.wdm_grid
         grid_options = (
             {}
             if grid is None
             else {"num_frequency_divisions": grid.num_frequency_divisions}
         )
         return transform(
-            start,
-            conditional_residual.data_domain,
+            state,
+            reference_data.data_domain,
             reference_data=time_reference,
             **grid_options,
         )
@@ -91,12 +97,22 @@ def noise_start(level):
             self.state.starts.append((conditional_residual, covariance, rng))
             return BlockState(covariance=white_covariance(conditional_residual, level))
 
+        def state_from_parameters(self, parameters, reference_data):
+            return BlockState(
+                covariance=white_covariance(reference_data, level),
+                parameters=dict(parameters),
+            )
+
     return NoiseStart()
 
 
 def test_block_without_initial_sample_is_refused(observed):
     class SampleOnly:
         name = "sample_only"
+
+        def state_from_parameters(self, parameters, reference_data):
+            # Stub: no test rebuilds this block's state.
+            return BlockState(parameters=dict(parameters))
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             return current_block_state
@@ -105,8 +121,11 @@ def test_block_without_initial_sample_is_refused(observed):
     assert isinstance(StartingBlock(), Block)
     wheel = Wheel(observed, num_frequency_divisions=8, random_seed=1)
     before = deepcopy(wheel._rng.bit_generator.state)
-    with pytest.raises(TypeError, match="does not implement initial_sample"):
+    with pytest.raises(TypeError) as excinfo:
         wheel.add(SampleOnly())
+    assert str(excinfo.value) == (
+        f"block 'sample_only' does not implement initial_sample; {_PROTOCOL}"
+    )
     assert len(wheel.ledger) == 0
     assert wheel._blocks == []
     assert wheel._rng.bit_generator.state == before

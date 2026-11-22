@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from conftest import white_covariance
-from enchilada import Covariance, FixedNoiseBlock, L1Data, Wheel, transform
+from enchilada import BlockState, Covariance, FixedNoiseBlock, L1Data, Wheel, transform
 
 
 @pytest.fixture
@@ -70,6 +70,33 @@ def test_gb_start_keeps_continuation_on_its_block(gb_model, spectral_context):
     assert block.state.samples.shape == (0, 4)
     assert block.state.updates == 0
     assert other.state.coords == {}
+
+
+def test_gb_rebuilds_its_template_from_the_published_parameters(
+    gb_model, spectral_context
+):
+    data, noise = spectral_context
+    block = make_block(gb_model)
+    # Publish from one non-zero dataset and rebuild on another: the rebuild may
+    # read only the grid, never the channel values.
+    rng = np.random.default_rng(1)
+    filled = replace(data, channel_data={"A": np.fft.rfft(rng.normal(size=64))})
+    other = replace(data, channel_data={"A": np.fft.rfft(rng.normal(size=64))})
+    published = block.initial_sample(filled, noise, rng=np.random.default_rng(0))
+    rebuilt = block.state_from_parameters(
+        {name: np.float64(value) for name, value in published.parameters.items()},
+        other,
+    )
+    assert isinstance(rebuilt, BlockState)
+    assert rebuilt.covariance is None
+    assert set(rebuilt.template) == set(published.template)
+    for channel in published.template:
+        np.testing.assert_allclose(
+            rebuilt.template[channel], published.template[channel], rtol=1e-9
+        )
+    assert rebuilt.parameters == published.parameters
+    with pytest.raises(ValueError, match="requires frequency-domain data"):
+        block.state_from_parameters(published.parameters, filled.to_time())
 
 
 def test_gb_requires_a_frequency_covariance_on_the_data_grid(
@@ -147,6 +174,9 @@ def test_gb_frequency_registration_reads_the_home_grid_noise_on_its_frequency_gr
         def initial_sample(self, conditional_residual, covariance, *, rng):
             seen_psds.append(block._context(conditional_residual, covariance)[1]["A"])
             return block.initial_sample(conditional_residual, covariance, rng=rng)
+
+        def state_from_parameters(self, parameters, reference_data):
+            return block.state_from_parameters(parameters, reference_data)
 
         def sample(self, conditional_residual, covariance, current_block_state, *, rng):
             seen_psds.append(block._context(conditional_residual, covariance)[1]["A"])

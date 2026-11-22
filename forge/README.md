@@ -10,8 +10,9 @@ this folder assumes you have read it.
 ## The three steps
 
 1. **Fill in `block.py`.** `ForgeBlock` marks five methods `# EDIT`. Three
-   are the model: `_template` renders the signal on the block's grid,
-   `initial_sample` draws or renders the start, `sample` advances the state.
+   are the model: `state_from_parameters` renders the signal on the block's
+   grid from one parameter set, `initial_sample` draws or renders the start,
+   `sample` advances the state.
    Two are checks, `_check_residual` and `_check_covariance`, which say what
    the model needs from its inputs. The placeholder is a sinusoid of one amplitude on the
    frequency grid with a conjugate Gaussian sampler, so everything runs
@@ -23,14 +24,14 @@ this folder assumes you have read it.
 3. **Run `wheel.ipynb`.** A `Wheel` on the same window with a WDM home grid of
    `FORGE_ROWS` rows (default 64), the covariance registered as a
    `FixedNoiseBlock` (a block with `role = "noise"`), `ForgeBlock` (which
-   declares `role = "signal"`) registered on its grid, a chain collected
-   through `on_cycle_complete`, the posterior against a truth you type in, and
-   a trace plot.
+   declares `role = "signal"`) registered on its grid, the campaign file the
+   Wheel writes (`output_path`), the posterior read from `wheel.l2` against a
+   truth you type in, and a trace plot.
 
 ## Setup
 
-From the repository root (`numeric-orbits` brings h5py and, through
-lisaorbits, matplotlib; `examples` brings JupyterLab):
+From the repository root (`numeric-orbits` brings matplotlib
+through lisaorbits; `examples` brings JupyterLab):
 
 ```sh
 uv sync --extra numeric-orbits --extra examples
@@ -61,13 +62,15 @@ callable `psd(f_hz)` or one per channel, into a `Covariance` on that grid.
 
 ## What to replace and what to keep
 
-Replace the model (`_template`, `initial_sample`, `sample`) and the checks'
-expectations (the grid, what the likelihood needs from the covariance). Keep
-the shape of the contract: a `BlockState` with a template on the input grid
-and no covariance (a signal block's noise model is a separate noise block),
-a complete state after a rejection too, draws from the supplied `rng`,
-diagnostics on `block.state` rather than in the ledger, and a fresh instance
-per campaign. Collect chains outside the block, as `wheel.ipynb` does. In
+Replace the model (`state_from_parameters`, `initial_sample`, `sample`) and the
+checks' expectations (the grid, what the likelihood needs from the covariance).
+Keep the shape of the contract: a `BlockState` with a template on the input
+grid and no covariance (a signal block's noise model is a separate noise
+block), a complete state after a rejection too, parameters from which
+`state_from_parameters` alone rebuilds that state (publish through it, as the
+placeholder does), draws from the supplied `rng`, diagnostics on `block.state`
+rather than in the ledger, and a fresh instance per campaign.
+Chains come from the campaign file, as `wheel.ipynb` shows. In
 the notebooks, change the settings cells and the lines marked `# EDIT` (the
 block's constructor, `TRUTH`); the asserts are the contract and name no
 parameter of the placeholder. Keep `State.num_sample_calls`: `block.ipynb`
@@ -79,22 +82,23 @@ window with a nonzero `tdi_flags` sample; `load_window(start_offset_s=...)`
 moves it.
 
 To move the block to another grid, change `DOMAIN` in both notebooks, render
-`_template` on that grid, update `_check_residual`, and rewrite the likelihood
-in `sample` (`inner_product` is the frequency grid's). The campaign itself
-lives on a WDM home grid of `NUM_FREQUENCY_DIVISIONS` rows (`FORGE_ROWS`,
-default 64): that count and the decimated window length divided by it must
-both be even integers, so choose `FORGE_DURATION_S` to fit, or load with
-`load_window(..., domain="wdm", num_frequency_divisions=...,
-num_time_divisions=...)`, which derives the duration. `DOMAIN = "wdm"` serves
-the block on the home grid itself. A block on any other grid is served by
-exact data transforms and receives the noise sum translated onto its grid
-through the diagonal spectral-model rule (exact for the white stand-in PSD,
-band-smoothed for a coloured one; see the translation section of the
+the signal in `state_from_parameters` on that grid, update `_check_residual`,
+and rewrite the likelihood in `sample` (`inner_product` is the frequency
+grid's). The campaign itself lives on a WDM home grid of
+`NUM_FREQUENCY_DIVISIONS` rows (`FORGE_ROWS`, default 64): that count and the
+decimated window length divided by it must both be even integers, so choose
+`FORGE_DURATION_S` to fit, or load with `load_window(..., domain="wdm",
+num_frequency_divisions=..., num_time_divisions=...)`, which derives the
+duration. `DOMAIN = "wdm"` serves the block on the home grid itself. A block
+on any other grid is served by exact data transforms and receives the noise
+sum translated onto its grid through the diagonal spectral-model rule (exact
+for the white stand-in PSD, band-smoothed for a coloured one; see the
+translation section of the
 [top-level README](../README.md#time-frequency-and-wdm-translation)), so
-blocks on different grids can share one campaign. The ledger keeps a noise
-block's covariance on the grid it was published on (templates are stored on
-the home grid), the home-grid sum receives its translation, and each block
-receives the sum on its own grid.
+blocks on different grids can share one campaign. The ledger keeps a noise block's
+covariance on the grid it was published on (templates are stored on the home
+grid), the home-grid sum receives its translation, and each block receives the
+sum on its own grid.
 
 ## Caveats
 

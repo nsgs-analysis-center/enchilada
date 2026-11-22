@@ -7,6 +7,7 @@ from enchilada.covariance import Covariance
 from enchilada.data import L1Data
 from enchilada.domains import Grid, WDMGrid
 from enchilada.fixed_noise import FixedNoiseBlock
+from enchilada.l2 import L2Data
 from enchilada.ledger import Ledger
 from enchilada.mojito import load_mojito_l1
 from enchilada.orbits import NumericOrbit, Orbit
@@ -28,6 +29,7 @@ __all__ = [
     "NumericOrbit",
     "Orbit",
     "L1Data",
+    "L2Data",
     "BlockState",
     "Wheel",
     "WDMGrid",
