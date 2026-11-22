@@ -12,8 +12,8 @@ import numpy as np
 import pytest
 from domania.wilson import matrix
 
-from enchilada import Covariance, Grid, WDMGrid, transform
-from enchilada._spectral import _layout, translate_blocks
+from enchilada import Covariance, Grid, L1Data, WDMGrid, transform
+from enchilada._spectral import _layout, _layout_of, translate_blocks
 
 NF, NT, FS = 8, 32, 2.0
 N = NF * NT
@@ -117,12 +117,53 @@ class TestExactCases:
         assert mine.dtype == np.complex128
         assert relative(mine.real, exact) < 1e-12
 
-    def test_time_varying_white_noise_into_wdm_is_the_exact_cell_variance(self, dense):
+    def test_a_slowly_varying_white_variance_into_wdm_is_the_exact_cell_variance(
+        self, dense
+    ):
         W, _, _ = dense
         variance = 1.0 + 0.8 * np.sin(2 * np.pi * np.arange(N) / N)
         exact = ((W**2) @ variance).reshape(NF, NT)
         mine = translate_blocks(one(variance), TIME, WDM)[0, 0]
         assert relative(mine, exact) < 1e-12
+
+    def test_i_i_d_variance_keeps_the_dc_and_nyquist_rows_exact(self, dense):
+        W, _, _ = dense
+        variance = np.random.default_rng(7).uniform(0.5, 3.0, N)
+        exact = ((W**2) @ variance).reshape(NF, NT)
+        mine = translate_blocks(one(variance), TIME, WDM)[0, 0]
+        edge = np.isin(_layout(NF, NT, DT).band, (0, NF))
+        assert edge.any()
+        assert relative(mine[edge], exact[edge]) < 1e-12
+
+    def test_a_step_variance_is_smoothed_but_keeps_the_trace(self, dense):
+        W, _, _ = dense
+        variance = np.where(np.arange(N) < N // 2, 1.0, 3.0)
+        exact = ((W**2) @ variance).reshape(NF, NT)
+        mine = translate_blocks(one(variance), TIME, WDM)[0, 0]
+        assert np.median(np.abs(mine / exact - 1)) < 0.1
+        assert relative(mine.sum(), exact.sum()) < 1e-12
+
+    @pytest.mark.parametrize("n", [255, 256])
+    def test_frequency_to_time_weights_nyquist_only_for_even_n(self, n):
+        rng = np.random.default_rng(8)
+        bins = rng.uniform(0.5, 2.0, n // 2 + 1)
+        # The full two-sided spectrum repeats bins 1.. once as the conjugate
+        # mirror; DC (and Nyquist, for even N) appear once. The time variance is
+        # (N dt)^-2 times the sum of all N per-bin variances.
+        full = np.concatenate([bins, bins[1 : (n + 1) // 2][::-1]])
+        assert full.size == n
+        expected = full.sum() / (n * DT) ** 2
+        source, target = Grid("frequency", n, FS), Grid("time", n, FS)
+        mine = translate_blocks(one(bins + 0j), source, target)[0, 0]
+        assert relative(mine, expected) < 1e-12
+
+    def test_the_record_guard_and_the_wdm_requirement(self):
+        with pytest.raises(ValueError, match="two different grids of one record"):
+            translate_blocks(one(np.ones(N)), TIME, TIME)
+        with pytest.raises(ValueError, match="two different grids of one record"):
+            translate_blocks(one(np.ones(N)), TIME, Grid("frequency", N, 4.0))
+        with pytest.raises(ValueError, match="is not a WDM grid"):
+            _layout_of(TIME)
 
     def test_time_to_frequency_is_the_mean_power(self):
         variance = 1.0 + 0.8 * np.sin(2 * np.pi * np.arange(N) / N)
@@ -190,25 +231,58 @@ def three_channel_spectrum():
 
 
 class TestTransformOverload:
-    @pytest.mark.parametrize("target_domain", ["time", "wdm"])
-    def test_a_correlated_covariance_stays_hermitian_and_positive_definite(
-        self, target_domain
-    ):
-        source = three_channel_spectrum()
-        translated = transform(
-            source,
-            target_domain,
-            num_frequency_divisions=NF if target_domain == "wdm" else None,
-        )
-        assert type(translated) is Covariance
-        assert translated.channel_names == ("A", "E", "T")
-        assert translated.grid == grid(target_domain)
-        assert translated.blocks.dtype == np.float64  # validated by the constructor
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ("time",),
+            ("wdm",),
+            ("wdm", "time"),
+            ("time", "wdm"),
+            ("wdm", "frequency"),
+            ("wdm", "wdm16"),
+        ],
+        ids=["f-t", "f-w", "f-w-t", "f-t-w", "f-w-f", "f-w-w16"],
+    )
+    def test_a_correlated_covariance_stays_hermitian_and_positive_definite(self, path):
+        translated = three_channel_spectrum()
+        for step in path:
+            if step == "wdm16":
+                translated = transform(translated, "wdm", num_frequency_divisions=16)
+                expected = grid("wdm", 16)
+            else:
+                translated = transform(
+                    translated,
+                    step,
+                    num_frequency_divisions=NF if step == "wdm" else None,
+                )
+                expected = grid(step)
+            assert type(translated) is Covariance
+            assert translated.channel_names == ("A", "E", "T")
+            assert translated.grid == expected
+            assert translated.blocks.dtype == (
+                np.complex128 if step == "frequency" else np.float64
+            )
+            assert np.all(translated.A > 0)
         back = transform(translated, "frequency")
         assert back.grid == FREQUENCY
         assert back.blocks.dtype == np.complex128
         assert np.all(back.blocks[0, 1].imag == 0)  # the diagonal model keeps Re
         assert np.all(back.A > 0)
+
+    def test_reference_data_is_accepted_and_ignored(self):
+        source = three_channel_spectrum()
+        reference = L1Data(
+            channel_data={"A": np.zeros(N)},
+            channel_names=("A",),
+            sample_rate_hz=FS,
+            tdi_generation="2.0",
+            physical_observable="fractional_frequency",
+            start_time_gps=0.0,
+        )
+        with_reference = transform(source, "time", reference_data=reference)
+        np.testing.assert_array_equal(
+            with_reference.blocks, transform(source, "time").blocks
+        )
 
     def test_pairs_are_carried_elementwise(self):
         data_grid = TIME

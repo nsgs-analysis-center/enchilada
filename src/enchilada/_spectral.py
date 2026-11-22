@@ -11,7 +11,9 @@ the same window domania's data transforms use, so Hermitian symmetry and
 positive definiteness survive. White noise round-trips exactly through every
 pair of grids; everything else is smoothed by a band mean (into and out of
 WDM across frequency), a column mean (across time) or the flattening of the
-time <-> frequency step. The user owns that approximation.
+time <-> frequency step. The user owns that approximation. The window time
+mean is exact for a variance that varies slowly over a column; sharper
+variations are smoothed, and only the DC and Nyquist rows stay exact.
 
 Reading bins into bands reflects the window's negative-frequency samples back
 onto the positive bins (a one-sided PSD seen through a two-sided window, what
@@ -165,8 +167,16 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
     ``source`` and ``target`` share the record (sample count and rate) and
     differ in domain or WDM grid. Frequency targets come back ``complex128``,
     the others ``float64``; a complex cross term entering time or WDM keeps
-    its real part (the mean power of the pair).
+    its real part (the mean power of the pair). When the target WDM grid has
+    fewer columns than the source, each target column reads one source column,
+    so power confined to a skipped source column is not carried (a recorded
+    design choice).
     """
+    if source == target or not source.same_record(target):
+        raise ValueError(
+            f"translate_blocks needs two different grids of one record, "
+            f"got {source} and {target}"
+        )
     n = source.num_time_samples
     dt = 1.0 / source.sample_rate_hz
     pair_shape = blocks.shape[:2]
@@ -184,7 +194,10 @@ def translate_blocks(blocks: np.ndarray, source: Grid, target: Grid) -> np.ndarr
         )
         return layout.folded(np.broadcast_to(column_model[..., None, :], shape)) / 2.0
     if source.data_domain == "frequency":
-        eta = endpoint_weights(n // 2 + 1)
+        eta = np.ones(n // 2 + 1)  # the last bin is Nyquist only for even N
+        eta[0] = 0.5
+        if n % 2 == 0:
+            eta[-1] = 0.5
         model = 2.0 * blocks.real / (n * dt)
         if target.data_domain == "time":
             level = (model * eta).sum(axis=-1) / eta.sum() / (2.0 * dt)

@@ -101,12 +101,16 @@ def transform(
     S(f, t): per-sample variances on time (flat in f), per-bin variances on
     frequency (flat in t), per-cell variances on WDM; the target grid takes
     weighted means of that model with the Meyer window's band weights across
-    frequency and its time weights across columns, so the result is a
+    frequency and, between time and WDM, its time weights across columns
+    (WDM to frequency takes a plain column mean and WDM to WDM reads the
+    source column at each target column centre), so the result is a
     validated Covariance with the same channels. This treats every covariance
     as diagonal in the grid index on every grid: white noise round-trips
     exactly, a coloured PSD comes back band-smoothed from WDM, a time-varying
     variance comes back column-smoothed, and time <-> frequency keeps only the
-    mean power. The same grid in and out returns ``value.copy()``.
+    mean power. A time variance enters WDM exactly only when it varies slowly
+    over a column; sharper variations are smoothed, and only the DC and
+    Nyquist rows stay exact. The same grid in and out returns ``value.copy()``.
     """
     if target_domain not in L1Data.DOMAINS:
         raise ValueError(f"target_domain must be one of {L1Data.DOMAINS}")
