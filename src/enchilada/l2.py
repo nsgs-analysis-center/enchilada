@@ -534,11 +534,12 @@ class L2Data:
     on each block's registered grid, then bring the results onto the home grid
     the way the Wheel does: templates by an exact transform, covariances (for
     the sum) by `transform`'s diagonal translation. So `states` agrees with
-    `wheel.ledger` and `covariance` with `wheel.covariance`, both on the home
-    grid; `residual` is formed on the home grid and returned on the observation
-    grid, where it agrees with `wheel.working_residual`. `residual` needs the
-    observed data: attach it with `observed_data` at `open` (it also carries
-    the orbit blocks may need); the live view has the Wheel's.
+    `wheel.ledger` (templates on the home grid, covariances on their blocks'
+    grids) and `covariance` with `wheel.covariance` on the home grid; `residual`
+    is formed on the home grid and returned on the observation grid, where it
+    agrees with `wheel.working_residual`. `residual` needs the observed data:
+    attach it with `observed_data` at `open` (it also carries the orbit blocks
+    may need); the live view has the Wheel's.
     """
 
     def __init__(
@@ -652,12 +653,29 @@ class L2Data:
 
     @property
     def home_grid(self) -> Grid:
-        """The Wheel's home grid; rebuilt templates and the noise sum are on it."""
-        return _block_grid_from_attrs(
-            self._require_open()["observation"].attrs,
-            self.observation_grid,
-            prefix="home_",
-        )
+        """The Wheel's home grid; rebuilt templates and the noise sum are on it.
+
+        A file without the home attributes still reads its parameters and
+        chains; asking for the home grid, and so any rebuild, raises ValueError.
+        """
+        attrs = self._require_open()["observation"].attrs
+        if "home_data_domain" not in attrs:
+            raise ValueError(
+                "the campaign file records no home grid (/observation has no "
+                "home_data_domain attribute); parameters and chains read, "
+                "rebuilds do not"
+            )
+        return _block_grid_from_attrs(attrs, self.observation_grid, prefix="home_")
+
+    def _home_observation(self, home_grid: Grid) -> L1Data:
+        """The attached observation on the home grid, transformed once per reader.
+
+        Callers check that an observation is attached.
+        """
+        if self._observed_on_home is None:
+            observed = cast(L1Data, self._observed)
+            self._observed_on_home = _data_on_grid(observed, home_grid)
+        return self._observed_on_home
 
     @property
     def channel_names(self) -> tuple[str, ...]:
@@ -877,11 +895,12 @@ class L2Data:
             info, index = infos[name]
             grid = _block_grid_from_attrs(info.group.attrs, observation_grid)
             if grid not in references:
-                references[grid] = (
-                    _data_on_grid(self._observed, grid)
-                    if self._observed is not None
-                    else self._zero_reference(grid, obs_attrs)
-                )
+                if self._observed is None:
+                    references[grid] = self._zero_reference(grid, obs_attrs)
+                elif grid == home_grid:
+                    references[grid] = self._home_observation(home_grid)
+                else:
+                    references[grid] = _data_on_grid(self._observed, grid)
             reference = _read_only(references[grid])
             parameters = self._parameters_at(info, name, index)
             try:
@@ -1011,19 +1030,26 @@ class L2Data:
         needed = self._required("covariance", "noise", resolved, named)
         home_grid = self.home_grid
         total: Covariance | None = None
-        for state in self._rebuild(resolved, needed).values():
+        for name, state in self._rebuild(resolved, needed).items():
             # A noise rebuild always carries one: `_check_role` enforced it.
             covariance = cast(Covariance, state.covariance)
             if covariance.grid != home_grid:
-                covariance = transform(
-                    covariance,
-                    home_grid.data_domain,
-                    num_frequency_divisions=(
-                        None
-                        if home_grid.wdm_grid is None
-                        else home_grid.wdm_grid.num_frequency_divisions
-                    ),
-                )
+                try:
+                    covariance = transform(
+                        covariance,
+                        home_grid.data_domain,
+                        num_frequency_divisions=(
+                            None
+                            if home_grid.wdm_grid is None
+                            else home_grid.wdm_grid.num_frequency_divisions
+                        ),
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"{name}.state_from_parameters covariance does not "
+                        f"translate onto the home grid {home_grid}: {error} "
+                        f"(rebuilding step {resolved})"
+                    ) from error
             total = covariance if total is None else total + covariance
         return total
 
@@ -1045,9 +1071,7 @@ class L2Data:
         named = self._named(blocks, "residual")
         self._check_known(named)
         needed = self._required("residual", "signal", resolved, named)
-        if self._observed_on_home is None:
-            self._observed_on_home = _data_on_grid(self._observed, self.home_grid)
-        observed = self._observed_on_home
+        observed = self._home_observation(self.home_grid)
         channel_data = {
             name: array.copy() for name, array in observed.channel_data.items()
         }

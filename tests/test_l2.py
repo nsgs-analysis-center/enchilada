@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import pytest
 
+import enchilada.l2
 from conftest import make_observed, white_covariance
 from enchilada import BlockState, Grid, L2Data, WDMGrid, Wheel, transform
 from enchilada.l2 import (
@@ -15,6 +16,7 @@ from enchilada.l2 import (
     _Recorder,
     _Schema,
 )
+from enchilada.translation import _data_on_grid
 
 
 def recorder(tmp_path, observed, name="campaign.h5"):
@@ -1115,6 +1117,65 @@ class TestL2DataFollowUps:
             result = l2.residual(3, [Wide("a", 1.0), late])
         assert all(v.dtype == np.float64 for v in result.channel_data.values())
 
+    def test_a_file_without_a_home_grid_reads_but_does_not_rebuild(
+        self, tmp_path, observed
+    ):
+        path, a, late = written_file(tmp_path, observed)
+        with h5py.File(path, "r+") as file:
+            del file["observation"].attrs["home_data_domain"]
+        message = re.escape(
+            "the campaign file records no home grid (/observation has no "
+            "home_data_domain attribute); parameters and chains read, "
+            "rebuilds do not"
+        )
+        with L2Data.open(path, observed_data=observed) as l2:
+            assert l2.parameters("a", step=3) == {"amplitude": 2.5}
+            np.testing.assert_array_equal(
+                l2.chain("a", "amplitude"), [1.0, 1.5, 2.0, 2.5]
+            )
+            assert l2.observation_grid == observed.grid
+            with pytest.raises(ValueError, match=message):
+                _ = l2.home_grid
+            with pytest.raises(ValueError, match=message):
+                l2.states(3, [a, late])
+            with pytest.raises(ValueError, match=message):
+                l2.covariance(3, [a, late])
+            with pytest.raises(ValueError, match=message):
+                l2.residual(3, [a, late])
+
+    def test_a_covariance_the_home_grid_refuses_is_refused_with_its_step(
+        self, tmp_path, observed
+    ):
+        # Finite on the time grid; its WDM translation overflows to infinity.
+        home = transform(observed, "wdm", num_frequency_divisions=8)
+        rec = _Recorder.create(tmp_path / "h.h5", observed, home_grid=home.grid)
+        rec.add_block(
+            "n",
+            role="noise",
+            index=0,
+            grid=observed.grid,
+            encoded=rec.encode(
+                "n", "initial_sample", {"variance": 1e308}, registering=True
+            ),
+        )
+        rec.close()
+        block = Level("n", 1e308)
+        with L2Data.open(tmp_path / "h.h5") as l2:
+            assert l2.states(0, [block])["n"].covariance.grid == observed.grid
+            with (
+                np.errstate(over="ignore", invalid="ignore"),
+                pytest.raises(
+                    ValueError,
+                    match=re.escape(
+                        "n.state_from_parameters covariance does not translate "
+                        f"onto the home grid {home.grid}: blocks must be finite "
+                        "(rebuilding step 0)"
+                    ),
+                ) as info,
+            ):
+                l2.covariance(0, [block])
+            assert isinstance(info.value.__cause__, ValueError)
+
     def test_an_unrecognised_role_is_refused_everywhere(self, tmp_path, observed):
         path, a, late = written_file(tmp_path, observed)
         with h5py.File(path, "r+") as file:
@@ -1157,8 +1218,9 @@ def raw_entries(wheel):
 def assert_rebuilds_wheel(wheel, blocks, *, atol=0):
     """The file's rebuilt states, covariance and residual agree with the Wheel's.
 
-    Templates and the covariance sum are on the home grid in both; the residual
-    is on the observation grid in both.
+    Templates and the covariance sum are on the home grid in both, and equal
+    bit for bit; the residual is on the observation grid in both and agrees to
+    `atol` (the two sum the templates in different orders).
     """
     channels = wheel.observed_data.channel_names
     assert wheel.l2.home_grid == wheel.home_grid
@@ -1169,24 +1231,22 @@ def assert_rebuilds_wheel(wheel, blocks, *, atol=0):
             assert states[block.name].template is None
         else:
             for ch in channels:
-                np.testing.assert_allclose(
-                    states[block.name].template[ch], entry.template[ch], atol=atol
+                np.testing.assert_array_equal(
+                    states[block.name].template[ch], entry.template[ch]
                 )
         if entry.covariance is None:
             assert states[block.name].covariance is None
         else:
             assert states[block.name].covariance.grid == entry.covariance.grid
-            np.testing.assert_allclose(
-                states[block.name].covariance.blocks,
-                entry.covariance.blocks,
-                atol=atol,
+            np.testing.assert_array_equal(
+                states[block.name].covariance.blocks, entry.covariance.blocks
             )
     rebuilt = wheel.l2.covariance(-1, blocks)
     if wheel.covariance is None:
         assert rebuilt is None
     else:
         assert rebuilt.grid == wheel.covariance.grid == wheel.home_grid
-        np.testing.assert_allclose(rebuilt.blocks, wheel.covariance.blocks, atol=atol)
+        np.testing.assert_array_equal(rebuilt.blocks, wheel.covariance.blocks)
     residual = wheel.l2.residual(-1, blocks)
     assert residual.grid == wheel.working_residual.grid == wheel.observed_data.grid
     for ch in channels:
@@ -1651,6 +1711,30 @@ class TestWheelRecords:
         with pytest.raises(RuntimeError, match="add was interrupted"):
             wheel.run(1)
         assert block.calls == 0
+
+    def test_the_observation_is_brought_home_once_per_reader(
+        self, tmp_path, observed, monkeypatch
+    ):
+        with Wheel(
+            observed,
+            num_frequency_divisions=8,
+            random_seed=0,
+            output_path=tmp_path / "c.h5",
+        ) as wheel:
+            block = Amplitude("h", 0.5)
+            wheel.add(block, data_domain="wdm")
+            wheel.run(1)
+            grids = []
+
+            def counting(data, grid):
+                grids.append(grid)
+                return _data_on_grid(data, grid)
+
+            monkeypatch.setattr(enchilada.l2, "_data_on_grid", counting)
+            wheel.l2.states(-1, [block])
+            wheel.l2.residual(-1, [block])
+            wheel.l2.states(0, [block])
+            assert grids.count(wheel.home_grid) == 1
 
     def test_close_ends_recording_and_the_file_reopens(self, tmp_path, observed):
         path = tmp_path / "c.h5"

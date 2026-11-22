@@ -218,23 +218,15 @@ def _data_on_grid(data: L1Data, grid: Grid) -> L1Data:
     )
 
 
-@overload
 def _state_on_grid(
     state: BlockState, grid: Grid, *, reference_data: L1Data
-) -> BlockState: ...
-
-
-@overload
-def _state_on_grid(state: object, grid: Grid, *, reference_data: L1Data) -> object: ...
-
-
-def _state_on_grid(state: object, grid: Grid, *, reference_data: L1Data) -> object:
+) -> BlockState:
     """A block state built on `reference_data`'s grid, moved to `grid`.
 
-    Anything that is not a BlockState passes through so the caller can raise
-    its own error; a state already on `grid` is returned as it is.
+    The template moves by one exact transform and the covariance is kept, as
+    `transform` does; a state already on `grid` is returned as it is.
     """
-    if not isinstance(state, BlockState) or reference_data.grid == grid:
+    if reference_data.grid == grid:
         return state
     return transform(
         state,
