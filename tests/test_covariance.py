@@ -470,7 +470,7 @@ class TestCopies:
 
     def test_deepcopy_and_pickle_restore_read_only_without_validation(self):
         cov = white_covariance(frequency_data(8), 1.0)
-        for restored in (deepcopy(cov), pickle.loads(pickle.dumps(cov))):
+        for restored in (deepcopy(cov), pickle.loads(pickle.dumps(cov))):  # ruff: ignore[S301]
             assert type(restored) is Covariance
             np.testing.assert_array_equal(restored.blocks, cov.blocks)
             assert not np.shares_memory(restored.blocks, cov.blocks)
@@ -481,7 +481,7 @@ class TestCopies:
         cov.blocks.setflags(write=True)
         cov.A[:] = -1.0  # invalid, yet the restore paths do not validate
         np.testing.assert_array_equal(deepcopy(cov).A, -1.0)
-        np.testing.assert_array_equal(pickle.loads(pickle.dumps(cov)).A, -1.0)
+        np.testing.assert_array_equal(pickle.loads(pickle.dumps(cov)).A, -1.0)  # ruff: ignore[S301]
 
 
 class TestCheckCompatible:

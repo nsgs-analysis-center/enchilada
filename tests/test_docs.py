@@ -23,7 +23,7 @@ README = Path(__file__).resolve().parent.parent / "README.md"
 # Fenced python blocks, each with a flag for whether the line above tagged it
 # runnable. Fragments (`MyBlock(...)`, an undefined `time_series`) deliberately
 # are not: they illustrate a call, they are not programs.
-_BLOCK = re.compile(r"(<!-- runnable -->\n)?```python\n(.*?)```", re.S)
+_BLOCK = re.compile(r"(<!-- runnable -->\n)?```python\n(.*?)```", re.DOTALL)
 
 
 def _blocks():

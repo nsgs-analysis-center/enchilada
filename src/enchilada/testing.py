@@ -36,7 +36,7 @@ class EchoBlock:
         num_sample_calls: int = 0
         metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         self.name = name
         self.state = self.State()
 

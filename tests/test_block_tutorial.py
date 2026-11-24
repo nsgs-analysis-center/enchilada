@@ -57,7 +57,7 @@ def tutorial_definitions():
     try:
         for cell in notebook["cells"]:
             if "definitions" in cell.get("metadata", {}).get("tags", []):
-                exec("".join(cell["source"]), module.__dict__)
+                exec("".join(cell["source"]), module.__dict__)  # ruff: ignore[S102]
         yield module
     finally:
         sys.modules.pop(module_name, None)

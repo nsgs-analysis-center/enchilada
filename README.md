@@ -193,6 +193,7 @@ RNG state on the block instance, for example in a nested dataclass with typed fi
 ```python
 from dataclasses import dataclass
 
+
 class MyBlock:
     role = "signal"  # publishes a template; Wheel reads this at add
 

@@ -16,12 +16,14 @@ reads with h5py, a core dependency.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import h5py
 import numpy as np
-from numpy.typing import NDArray
 from scipy.interpolate import CubicSpline
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 SPEED_OF_LIGHT_M_PER_S = 299792458.0  # m/s
 # J2000 mean obliquity of the ecliptic, used for the equatorial-to-ecliptic rotation.

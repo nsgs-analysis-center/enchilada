@@ -12,11 +12,15 @@ SciPy is a core dependency, so ``decimate`` needs no extra.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-from numpy.typing import NDArray
 from scipy.signal import firwin, kaiserord, resample_poly
 
 from enchilada.data import L1Data
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 STOPBAND_ATTENUATION_DB = 120.0
 """Minimum attenuation above the new Nyquist frequency, in dB."""
